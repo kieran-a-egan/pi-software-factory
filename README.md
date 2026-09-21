@@ -106,7 +106,7 @@ npm install
 git init
 git branch -M main
 git add -A
-git commit -m "Software Factory v0.2.0"
+git commit -m "Software Factory v0.2.2"
 
 pi install (Get-Location).Path
 ```
@@ -152,14 +152,14 @@ The package manifest points directly to `software-factory.ts`, so the extension 
 Once the repository has a remote, tag releases and install the Git source instead of the local path:
 
 ```powershell
-git tag v0.2.0
+git tag v0.2.2
 git push origin main --tags
 ```
 
 Then, for example:
 
 ```text
-pi install git:github.com/<owner>/pi-software-factory@v0.2.0
+pi install git:github.com/<owner>/pi-software-factory@v0.2.2
 ```
 
 Pi can update unpinned Git package sources with its package update commands; pinned refs remain fixed until explicitly changed.
@@ -325,3 +325,10 @@ pi-software-factory/
     ├── validate.ts
     └── verification.ts
 ```
+
+
+## Transcript UI (v0.2.2)
+
+v0.2.2 does not use Pi's dock widget. Factory progress is written as custom transcript entries, so it scrolls naturally with the conversation and is not clipped by terminal height. These entries are TUI/session state only and do not enter the LLM context. The currently executing stage is shown in Pi's one-line status bar.
+
+`/factory-status` appends the complete most-recent run summary and stage list to the transcript. Completed run state is also recovered from persisted session entries after an extension reload.

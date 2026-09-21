@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.2
+
+- Replaced the height-limited live widget with durable transcript entries.
+- Completed stages now render inline in Pi's normal scrollable transcript.
+- Current work uses only the one-line Pi status bar.
+- `/factory-status` now prints a complete run summary into the transcript.
+- Transcript entries do not participate in LLM context.
+- Last completed run can be recovered from persisted session entries after reload.
+- Clears stale `software-factory` widgets left by v0.2.0/v0.2.1.
+
+## 0.2.1
+
+- Keep the live factory widget compact so Pi cannot hide the newest stage behind dock truncation.
+- Move the current/final state to the top of the widget.
+- Truncate the objective to a single compact line.
+- Change `/factory-status` into a scrollable stage browser with per-stage duration/model/token details.
+
 ## 0.2.0
 
 - Package the factory as a first-class Pi package with a named `software-factory.ts` entrypoint.
