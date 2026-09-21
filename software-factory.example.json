@@ -1,0 +1,24 @@
+{
+  "qwen": {
+    "provider": "unsloth-local",
+    "model": "unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M",
+    "thinking": "medium"
+  },
+  "astra": {
+    "provider": "openai-codex",
+    "model": "gpt-6-astra",
+    "thinking": "high"
+  },
+  "jev": {
+    "model": "jev-latest",
+    "minChoiceConfidence": 0.6,
+    "minNoulProbability": 0.65
+  },
+  "runRoot": ".okf/work",
+  "contextPaths": ["AGENTS.md", ".okf/project"],
+  "contextMaxBytes": 180000,
+  "requireCleanWorkingTree": true,
+  "verificationCommands": [],
+  "maxRepairPasses": 1,
+  "maxDiffCharsForReview": 120000
+}

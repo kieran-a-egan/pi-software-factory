@@ -1,0 +1,30 @@
+{
+  "name": "pi-software-factory",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Pi package: Jev-routed software factory using Astra for architecture/review and local Qwen for repository work.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "software-factory",
+    "jev",
+    "qwen"
+  ],
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@typesafe-ai/sdk": "^0.5.7"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./software-factory.ts"
+    ]
+  }
+}
