@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0
+
+- add Qwen context-budget accounting for implementation and repair workers
+- emit a warning at 65K context and request a factual checkpoint at 75K by default
+- persist checkpoint artifacts and resume the same implementation unit in a fresh Pi/Qwen session
+- keep Pi auto-compaction as a safety net before the 88K hard limit
+- add configurable `contextBudget` thresholds and maximum checkpoint count
+- record max context, compaction count, and checkpoint requests in stage telemetry
+- distinguish context warnings, checkpoint requests, and persisted checkpoints inline in the Pi transcript
+
 ## 0.2.2
 
 - Replaced the height-limited live widget with durable transcript entries.

@@ -2,9 +2,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { loadConfig } from "./src/config.js";
 import { runFactory } from "./src/controller.js";
-import type { FactoryProgressEvent, FactoryRunState, StageTelemetry, TokenUsageSnapshot } from "./src/types.js";
+import type { ContextUsageSnapshot, FactoryProgressEvent, FactoryRunState, StageTelemetry, TokenUsageSnapshot } from "./src/types.js";
 
-const VERSION = "0.2.2";
+const VERSION = "0.3.0";
 const ENTRY_TYPE = "software-factory";
 
 type TranscriptEntry =
@@ -17,6 +17,20 @@ type TranscriptEntry =
   | {
       kind: "stage";
       telemetry: StageTelemetry;
+    }
+  | {
+      kind: "context";
+      stage: string;
+      label?: string;
+      level: "warning" | "checkpoint";
+      usage: ContextUsageSnapshot;
+    }
+  | {
+      kind: "checkpoint-saved";
+      stage: string;
+      label?: string;
+      index: number;
+      usage: ContextUsageSnapshot;
     }
   | {
       kind: "run-final";
@@ -118,8 +132,30 @@ function renderTranscriptEntry(data: TranscriptEntry, expanded: boolean, theme: 
           `${stage.tokens.cacheRead.toLocaleString()} cache read)`,
       );
     }
+    if (stage.maxContextTokens) {
+      const window = stage.contextWindow ? ` / ${stage.contextWindow.toLocaleString()}` : "";
+      details.push(`${theme.fg("muted", "Max context:")} ${stage.maxContextTokens.toLocaleString()}${window} tok`);
+    }
+    if (stage.compactions) details.push(`${theme.fg("muted", "Pi compactions:")} ${stage.compactions}`);
     if (stage.error) details.push(theme.fg("error", `Error: ${stage.error}`));
     return details.join("\n");
+  }
+
+  if (data.kind === "context") {
+    const name = `${data.stage}${data.label ? ` (${data.label})` : ""}`;
+    const window = data.usage.contextWindow ? ` / ${data.usage.contextWindow.toLocaleString()}` : "";
+    const percent = typeof data.usage.percent === "number" ? ` · ${data.usage.percent.toFixed(1)}%` : "";
+    const prefix = data.level === "checkpoint" ? "△ checkpoint requested" : "△ context";
+    const line = `${prefix} · ${name} · ${data.usage.tokens.toLocaleString()}${window} tok${percent}`;
+    return data.level === "checkpoint" ? theme.fg("warning", line) : theme.fg("muted", line);
+  }
+
+  if (data.kind === "checkpoint-saved") {
+    const name = `${data.stage}${data.label ? ` (${data.label})` : ""}`;
+    const window = data.usage.contextWindow ? ` / ${data.usage.contextWindow.toLocaleString()}` : "";
+    const percent = typeof data.usage.percent === "number" ? ` · ${data.usage.percent.toFixed(1)}%` : "";
+    const line = `↻ checkpoint saved #${data.index} · ${name} · ${data.usage.tokens.toLocaleString()}${window} tok${percent}`;
+    return theme.fg("warning", line);
   }
 
   if (data.kind === "run-error") {
@@ -143,6 +179,9 @@ function renderTranscriptEntry(data: TranscriptEntry, expanded: boolean, theme: 
 
     if (data.state.repairPasses > 0) {
       lines.push(`${theme.fg("muted", "Repairs:")} ${data.state.repairPasses}`);
+    }
+    if ((data.state.checkpoints?.length ?? 0) > 0) {
+      lines.push(`${theme.fg("muted", "Context checkpoints:")} ${data.state.checkpoints!.length}`);
     }
     if (expanded && stages.length > 0) {
       lines.push("", theme.fg("dim", stages.map(stageSummary).join("\n")));
@@ -243,6 +282,33 @@ export default function softwareFactory(pi: ExtensionAPI) {
           if (event.type === "started") {
             const label = event.label ? ` (${event.label})` : "";
             ctx.ui.setStatus("software-factory", `Factory · ${event.stage}${label}`);
+            return;
+          }
+
+          if (event.type === "context") {
+            const label = event.label ? ` (${event.label})` : "";
+            ctx.ui.setStatus(
+              "software-factory",
+              `Factory · ${event.stage}${label} · ${event.usage.tokens.toLocaleString()} ctx`,
+            );
+            pi.appendEntry(ENTRY_TYPE, {
+              kind: "context",
+              stage: event.stage,
+              label: event.label,
+              level: event.level,
+              usage: event.usage,
+            } satisfies TranscriptEntry);
+            return;
+          }
+
+          if (event.type === "checkpoint-saved") {
+            pi.appendEntry(ENTRY_TYPE, {
+              kind: "checkpoint-saved",
+              stage: event.stage,
+              label: event.label,
+              index: event.index,
+              usage: event.usage,
+            } satisfies TranscriptEntry);
             return;
           }
 

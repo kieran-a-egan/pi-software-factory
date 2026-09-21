@@ -6,13 +6,48 @@ export interface ModelRef {
   thinking: ThinkingLevel;
 }
 
-
 export interface TokenUsageSnapshot {
   input: number;
   output: number;
   cacheRead: number;
   cacheWrite: number;
   total: number;
+}
+
+export interface ContextUsageSnapshot {
+  tokens: number;
+  contextWindow?: number;
+  percent?: number | null;
+}
+
+export interface ContextBudgetConfig {
+  enabled: boolean;
+  warningTokens: number;
+  checkpointTokens: number;
+  hardLimitTokens: number;
+  maxCheckpointsPerStage: number;
+}
+
+export interface WorkerCheckpoint {
+  unitId: string;
+  summary: string;
+  completedWork: string[];
+  changedFiles: string[];
+  decisions: string[];
+  verifiedFacts: string[];
+  remainingWork: string[];
+  blockers: string[];
+  relevantSymbols: string[];
+  nextAction: string;
+}
+
+export interface ContextCheckpointRecord {
+  stage: string;
+  label?: string;
+  index: number;
+  createdAt: string;
+  context: ContextUsageSnapshot;
+  checkpoint: WorkerCheckpoint;
 }
 
 export interface StageTelemetry {
@@ -27,12 +62,30 @@ export interface StageTelemetry {
   tokens?: TokenUsageSnapshot;
   cost?: number;
   contextUsage?: unknown;
+  maxContextTokens?: number;
+  contextWindow?: number;
+  compactions?: number;
+  checkpointRequested?: boolean;
   error?: string;
 }
 
 export type FactoryProgressEvent =
   | { type: "started"; stage: string; label?: string; actor: StageTelemetry["actor"]; model?: string }
-  | { type: "completed"; telemetry: StageTelemetry };
+  | { type: "completed"; telemetry: StageTelemetry }
+  | {
+      type: "context";
+      stage: string;
+      label?: string;
+      level: "warning" | "checkpoint";
+      usage: ContextUsageSnapshot;
+    }
+  | {
+      type: "checkpoint-saved";
+      stage: string;
+      label?: string;
+      index: number;
+      usage: ContextUsageSnapshot;
+    };
 
 export interface FactoryConfig {
   qwen: ModelRef;
@@ -42,6 +95,7 @@ export interface FactoryConfig {
     minChoiceConfidence: number;
     minNoulProbability: number;
   };
+  contextBudget: ContextBudgetConfig;
   runRoot: string;
   contextPaths: string[];
   contextMaxBytes: number;
@@ -169,6 +223,7 @@ export interface FactoryRunState {
   planGate?: PlanGateDecision;
   workers?: WorkerReport[];
   workerGates?: WorkerGateDecision[];
+  checkpoints?: ContextCheckpointRecord[];
   verification?: VerificationResult;
   review?: ReviewResult;
   reviewGate?: ReviewGateDecision;
