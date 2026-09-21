@@ -18,6 +18,13 @@ export const DEFAULT_CONFIG: FactoryConfig = {
     minChoiceConfidence: 0.60,
     minNoulProbability: 0.65,
   },
+  contextBudget: {
+    enabled: true,
+    warningTokens: 65_000,
+    checkpointTokens: 75_000,
+    hardLimitTokens: 88_000,
+    maxCheckpointsPerStage: 3,
+  },
   runRoot: ".okf/work",
   contextPaths: ["AGENTS.md", ".okf/project"],
   contextMaxBytes: 180_000,
@@ -45,6 +52,23 @@ export function loadConfig(cwd: string): FactoryConfig {
 
   const parsed = JSON.parse(readFileSync(configPath, "utf8"));
   const config = deepMerge(structuredClone(DEFAULT_CONFIG), parsed);
+
+  const budget = config.contextBudget;
+  if (
+    !Number.isSafeInteger(budget.warningTokens) ||
+    !Number.isSafeInteger(budget.checkpointTokens) ||
+    !Number.isSafeInteger(budget.hardLimitTokens) ||
+    budget.warningTokens <= 0 ||
+    budget.warningTokens >= budget.checkpointTokens ||
+    budget.checkpointTokens >= budget.hardLimitTokens
+  ) {
+    throw new Error(
+      "Invalid contextBudget: require 0 < warningTokens < checkpointTokens < hardLimitTokens.",
+    );
+  }
+  if (!Number.isSafeInteger(budget.maxCheckpointsPerStage) || budget.maxCheckpointsPerStage < 0) {
+    throw new Error("Invalid contextBudget.maxCheckpointsPerStage: expected a non-negative integer.");
+  }
 
   if (!isAbsolute(config.runRoot)) config.runRoot = join(cwd, config.runRoot);
   return config;

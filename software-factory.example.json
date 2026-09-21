@@ -15,10 +15,20 @@
     "minNoulProbability": 0.65
   },
   "runRoot": ".okf/work",
-  "contextPaths": ["AGENTS.md", ".okf/project"],
+  "contextPaths": [
+    "AGENTS.md",
+    ".okf/project"
+  ],
   "contextMaxBytes": 180000,
   "requireCleanWorkingTree": true,
   "verificationCommands": [],
   "maxRepairPasses": 1,
-  "maxDiffCharsForReview": 120000
+  "maxDiffCharsForReview": 120000,
+  "contextBudget": {
+    "enabled": true,
+    "warningTokens": 65000,
+    "checkpointTokens": 75000,
+    "hardLimitTokens": 88000,
+    "maxCheckpointsPerStage": 3
+  }
 }

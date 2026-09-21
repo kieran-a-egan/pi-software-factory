@@ -2,6 +2,7 @@ import type {
   ArchitectureResult,
   ReviewResult,
   ScoutResult,
+  WorkerCheckpoint,
   WorkerReport,
 } from "./types.js";
 
@@ -94,6 +95,23 @@ export function validateWorkerReport(value: unknown): WorkerReport {
     blockers,
     remainingWork,
     notes,
+  };
+}
+
+
+export function validateWorkerCheckpoint(value: unknown): WorkerCheckpoint {
+  const v = obj(value, "WorkerCheckpoint");
+  return {
+    unitId: str(v.unitId, "unitId"),
+    summary: str(v.summary, "summary"),
+    completedWork: arr(v.completedWork ?? [], "completedWork").map(String),
+    changedFiles: arr(v.changedFiles ?? [], "changedFiles").map(String),
+    decisions: arr(v.decisions ?? [], "decisions").map(String),
+    verifiedFacts: arr(v.verifiedFacts ?? [], "verifiedFacts").map(String),
+    remainingWork: arr(v.remainingWork ?? [], "remainingWork").map(String),
+    blockers: arr(v.blockers ?? [], "blockers").map(String),
+    relevantSymbols: arr(v.relevantSymbols ?? [], "relevantSymbols").map(String),
+    nextAction: str(v.nextAction, "nextAction"),
   };
 }
 

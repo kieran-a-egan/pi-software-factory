@@ -2,7 +2,13 @@ import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { loadProjectContext } from "./context.js";
 import { resolveRunRoot } from "./config.js";
 import { JevDecisionEngine } from "./jev.js";
-import { readOnlyTools, runAgent, writeTools, type AgentRunResult } from "./agent-runner.js";
+import {
+  readOnlyTools,
+  runAgent,
+  runCheckpointableAgent,
+  writeTools,
+  type AgentRunMetrics,
+} from "./agent-runner.js";
 import {
   ARCHITECT_SYSTEM,
   IMPLEMENTER_SYSTEM,
@@ -10,6 +16,7 @@ import {
   REVIEWER_SYSTEM,
   SCOUT_SYSTEM,
   architectPrompt,
+  continuationPrompt,
   implementerPrompt,
   repairPrompt,
   reviewerPrompt,
@@ -27,12 +34,21 @@ import type {
   WorkerGateDecision,
   WorkerReport,
 } from "./types.js";
-import { validateArchitecture, validateReview, validateScout, validateWorkerReport } from "./validate.js";
+import {
+  validateArchitecture,
+  validateReview,
+  validateScout,
+  validateWorkerCheckpoint,
+  validateWorkerReport,
+} from "./validate.js";
 import { gitStatus, verify } from "./verification.js";
 
 export type ProgressFn = (event: FactoryProgressEvent) => void;
 
-type TelemetryExtras = Partial<Pick<StageTelemetry, "model" | "tokens" | "cost" | "contextUsage">>;
+type TelemetryExtras = Partial<Pick<
+  StageTelemetry,
+  "model" | "tokens" | "cost" | "contextUsage" | "maxContextTokens" | "contextWindow" | "compactions" | "checkpointRequested"
+>>;
 
 function tokenSnapshotFromJev(value: any): TokenUsageSnapshot | undefined {
   const usage = value?.raw?.usage;
@@ -53,12 +69,16 @@ function jevExtras(value: any, configuredModel: string): TelemetryExtras {
   };
 }
 
-function agentExtras<T>(run: AgentRunResult<T>): TelemetryExtras {
+function agentExtras<T extends { metrics: AgentRunMetrics }>(run: T): TelemetryExtras {
   return {
     model: run.metrics.model,
     tokens: run.metrics.tokens,
     cost: run.metrics.cost,
     contextUsage: run.metrics.contextUsage,
+    maxContextTokens: run.metrics.maxContextTokens,
+    contextWindow: run.metrics.contextWindow,
+    compactions: run.metrics.compactions,
+    checkpointRequested: run.metrics.checkpointRequested,
   };
 }
 
@@ -85,6 +105,7 @@ function buildRunSummary(state: FactoryRunState) {
     finalStatus: state.finalStatus,
     finalReason: state.finalReason,
     repairPasses: state.repairPasses,
+    checkpointCount: state.checkpoints?.length ?? 0,
     stageCount: telemetry.length,
     totalStageDurationMs: telemetry.reduce((sum, stage) => sum + stage.durationMs, 0),
     tokens,
@@ -195,6 +216,100 @@ export async function runFactory(
   const projectContext = loadProjectContext(cwd, config.contextPaths, config.contextMaxBytes);
   store.write("project-context.json", { content: projectContext });
 
+  const runCheckpointedQwenWorker = async (input: {
+    role: "implementer" | "repairer";
+    stage: "qwen-implement" | "qwen-repair";
+    label: string;
+    artifactStem: string;
+    systemPrompt: string;
+    basePrompt: string;
+  }): Promise<WorkerReport | null> => {
+    let prompt = input.basePrompt;
+    let checkpointCount = 0;
+
+    while (true) {
+      const segmentLabel = checkpointCount === 0
+        ? input.label
+        : `${input.label} · resume ${checkpointCount}`;
+
+      let segment;
+      try {
+        segment = await runStage(
+          {
+            stage: input.stage,
+            label: segmentLabel,
+            actor: "qwen",
+            model: `${config.qwen.provider}/${config.qwen.model}`,
+          },
+          () => runCheckpointableAgent({
+            role: input.role,
+            cwd,
+            model: config.qwen,
+            systemPrompt: input.systemPrompt,
+            prompt,
+            modelRuntime,
+            tools: writeTools(),
+            validate: validateWorkerReport,
+            contextBudget: config.contextBudget,
+            validateCheckpoint: validateWorkerCheckpoint,
+            onContext: (level, usage) => {
+              progress({
+                type: "context",
+                stage: input.stage,
+                label: segmentLabel,
+                level,
+                usage,
+              });
+            },
+          }),
+          agentExtras,
+        );
+      } catch (error: any) {
+        const message = error?.message ?? String(error);
+        if (message.includes("context checkpoint threshold")) {
+          state.finalStatus = "human";
+          state.finalReason = `Qwen context checkpoint failed for ${input.label}: ${message}`;
+          setPhase("human");
+          return null;
+        }
+        throw error;
+      }
+
+      if (segment.kind === "result") return segment.result;
+
+      checkpointCount += 1;
+      const record = {
+        stage: input.stage,
+        label: input.label,
+        index: checkpointCount,
+        createdAt: new Date().toISOString(),
+        context: segment.context,
+        checkpoint: segment.checkpoint,
+      };
+      state.checkpoints ??= [];
+      state.checkpoints.push(record);
+      store.write(`checkpoint-${input.artifactStem}-${checkpointCount}.json`, record);
+      store.writeState(state);
+      progress({
+        type: "checkpoint-saved",
+        stage: input.stage,
+        label: input.label,
+        index: checkpointCount,
+        usage: segment.context,
+      });
+
+      if (checkpointCount > config.contextBudget.maxCheckpointsPerStage) {
+        state.finalStatus = "human";
+        state.finalReason =
+          `Qwen exceeded maxCheckpointsPerStage (${config.contextBudget.maxCheckpointsPerStage}) for ${input.label}.`;
+        setPhase("human");
+        return null;
+      }
+
+      prompt = continuationPrompt(input.basePrompt, segment.checkpoint);
+    }
+  };
+
   const gateWorkerReport = async (input: {
     phase: "implementation" | "repair";
     label: string;
@@ -235,7 +350,7 @@ export async function runFactory(
 
     if (gate.disposition !== "ready") {
       state.finalStatus = "human";
-      state.finalReason = `Jev classified ${input.label} as ${gate.disposition}. v0.2 stops rather than auto-continuing worker work.`;
+      state.finalReason = `Jev classified ${input.label} as ${gate.disposition}. v0.3 stops rather than auto-continuing worker work.`;
       setPhase("human");
       return null;
     }
@@ -301,35 +416,31 @@ export async function runFactory(
     return stop("human", "Jev plan gate confidence/completeness is below configured thresholds.");
   }
   if (state.planGate.action !== "proceed") {
-    return stop("human", `Plan gate requested ${state.planGate.action}; v0.2 stops rather than auto-looping plan/scout.`);
+    return stop("human", `Plan gate requested ${state.planGate.action}; v0.3 stops rather than auto-looping plan/scout.`);
   }
 
   state.workers = [];
   state.workerGates = [];
+  state.checkpoints = [];
   for (const unit of state.architecture.implementationUnits) {
-    const workerRun = await runStage(
-      { stage: "qwen-implement", label: unit.id, actor: "qwen", model: `${config.qwen.provider}/${config.qwen.model}` },
-      () => runAgent({
-        role: "implementer",
-        cwd,
-        model: config.qwen,
-        systemPrompt: IMPLEMENTER_SYSTEM,
-        prompt: implementerPrompt({
-          objective,
-          projectContext,
-          architectureSummary: state.architecture!.summary,
-          architecturalDecisions: state.architecture!.architecturalDecisions,
-          unit,
-        }),
-        modelRuntime,
-        tools: writeTools(),
-        validate: validateWorkerReport,
-      }),
-      agentExtras,
-    );
-    const worker = workerRun.result;
-    state.workers.push(worker);
     const safeUnitId = unit.id.replace(/[^a-zA-Z0-9_.-]/g, "_");
+    const basePrompt = implementerPrompt({
+      objective,
+      projectContext,
+      architectureSummary: state.architecture!.summary,
+      architecturalDecisions: state.architecture!.architecturalDecisions,
+      unit,
+    });
+    const worker = await runCheckpointedQwenWorker({
+      role: "implementer",
+      stage: "qwen-implement",
+      label: unit.id,
+      artifactStem: `implementation-${safeUnitId}`,
+      systemPrompt: IMPLEMENTER_SYSTEM,
+      basePrompt,
+    });
+    if (!worker) return finish();
+    state.workers.push(worker);
     store.write(`implementation-${safeUnitId}.json`, worker);
 
     const gate = await gateWorkerReport({
@@ -367,27 +478,22 @@ export async function runFactory(
       deterministicFailures,
     };
 
-    const repairRun = await runStage(
-      { stage: "qwen-repair", label: `deterministic pass ${state.repairPasses}`, actor: "qwen", model: `${config.qwen.provider}/${config.qwen.model}` },
-      () => runAgent({
-        role: "repairer",
-        cwd,
-        model: config.qwen,
-        systemPrompt: REPAIRER_SYSTEM,
-        prompt: repairPrompt({
-          unitId: `verification-repair-${state.repairPasses}`,
-          objective,
-          architecture: state.architecture!,
-          review: null,
-          deterministicFailures,
-        }),
-        modelRuntime,
-        tools: writeTools(),
-        validate: validateWorkerReport,
-      }),
-      agentExtras,
-    );
-    const repair = repairRun.result;
+    const repairBasePrompt = repairPrompt({
+      unitId: `verification-repair-${state.repairPasses}`,
+      objective,
+      architecture: state.architecture!,
+      review: null,
+      deterministicFailures,
+    });
+    const repair = await runCheckpointedQwenWorker({
+      role: "repairer",
+      stage: "qwen-repair",
+      label: `deterministic pass ${state.repairPasses}`,
+      artifactStem: `repair-${state.repairPasses}`,
+      systemPrompt: REPAIRER_SYSTEM,
+      basePrompt: repairBasePrompt,
+    });
+    if (!repair) return finish();
     store.write(`repair-${state.repairPasses}.json`, repair);
 
     const repairGate = await gateWorkerReport({
@@ -471,27 +577,22 @@ export async function runFactory(
       deterministicFailures,
     };
 
-    const repairRun = await runStage(
-      { stage: "qwen-repair", label: `review pass ${state.repairPasses}`, actor: "qwen", model: `${config.qwen.provider}/${config.qwen.model}` },
-      () => runAgent({
-        role: "repairer",
-        cwd,
-        model: config.qwen,
-        systemPrompt: REPAIRER_SYSTEM,
-        prompt: repairPrompt({
-          unitId: `review-repair-${state.repairPasses}`,
-          objective,
-          architecture: state.architecture!,
-          review,
-          deterministicFailures,
-        }),
-        modelRuntime,
-        tools: writeTools(),
-        validate: validateWorkerReport,
-      }),
-      agentExtras,
-    );
-    const repair = repairRun.result;
+    const repairBasePrompt = repairPrompt({
+      unitId: `review-repair-${state.repairPasses}`,
+      objective,
+      architecture: state.architecture!,
+      review,
+      deterministicFailures,
+    });
+    const repair = await runCheckpointedQwenWorker({
+      role: "repairer",
+      stage: "qwen-repair",
+      label: `review pass ${state.repairPasses}`,
+      artifactStem: `repair-${state.repairPasses}`,
+      systemPrompt: REPAIRER_SYSTEM,
+      basePrompt: repairBasePrompt,
+    });
+    if (!repair) return finish();
     store.write(`repair-${state.repairPasses}.json`, repair);
 
     const repairGate = await gateWorkerReport({

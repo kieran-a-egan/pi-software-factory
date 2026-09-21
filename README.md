@@ -7,7 +7,7 @@ A Pi package that runs a controlled software-engineering pipeline using:
 - **local Qwen3.8-27B** for repository scouting, implementation, and repair
 - **deterministic tools** for Git/build/test/typecheck/lint truth
 
-Current version: **0.2.0**
+Current version: **0.3.0**
 
 ## Pipeline
 
@@ -49,22 +49,38 @@ Current version: **0.2.0**
 
 The controller owns the state machine. Models do not arbitrarily select the next agent.
 
-## v0.2 changes
+## v0.3 changes
 
-v0.2 keeps the validated v0.1.4 control flow and adds packaging/observability:
+v0.3 adds proactive context management to the local Qwen implementation/repair tier while preserving the validated controller/Jev/Astra control flow.
 
-- first-class Pi package with a named root extension entrypoint: `software-factory.ts`
-- live stage widget in Pi
-- `/factory-status`
-- per-stage durations
-- Pi subagent input/output/cache token usage
-- subagent context-usage snapshots where Pi exposes them
-- Jev input/output token usage
-- `telemetry.json`
-- `run-summary.json`
-- Git-ready package layout
+Default policy for the ~98K advertised Qwen context:
 
-v0.2 intentionally does **not** yet add autonomous `rescout`/`replan` loops or proactive ~75K Qwen checkpoint/restart. Those are subsequent control-flow changes.
+```text
+65K  warn
+75K  request factual checkpoint
+88K  hard safety region / Pi auto-compaction fallback
+```
+
+When a Qwen implementation or repair session crosses the checkpoint threshold, the controller asks it to emit a compact `WorkerCheckpoint`, persists that artifact, disposes the session, and resumes the same unit in a fresh Qwen session. Repository edits remain on disk; conversation history does not.
+
+Checkpoint artifacts contain:
+
+```text
+unitId
+summary
+completedWork
+changedFiles
+decisions
+verifiedFacts
+remainingWork
+blockers
+relevantSymbols
+nextAction
+```
+
+The factory records max context usage, Pi compactions, checkpoint requests, and checkpoint artifacts in the normal telemetry/run directory.
+
+v0.3 intentionally leaves autonomous Jev `rescout` / `replan` loops for a later release.
 
 ## Requirements
 
@@ -106,7 +122,7 @@ npm install
 git init
 git branch -M main
 git add -A
-git commit -m "Software Factory v0.2.2"
+git commit -m "Software Factory v0.3.0"
 
 pi install (Get-Location).Path
 ```
@@ -131,7 +147,7 @@ PowerShell:
 Remove-Item -Recurse -Force "$HOME\.pi\agent\extensions\software-factory"
 ```
 
-Only do this after your v0.2 checkout is safely stored elsewhere.
+Only do this after your package checkout is safely stored elsewhere.
 
 Verify the package install:
 
@@ -152,14 +168,14 @@ The package manifest points directly to `software-factory.ts`, so the extension 
 Once the repository has a remote, tag releases and install the Git source instead of the local path:
 
 ```powershell
-git tag v0.2.2
+git tag v0.3.0
 git push origin main --tags
 ```
 
 Then, for example:
 
 ```text
-pi install git:github.com/<owner>/pi-software-factory@v0.2.2
+pi install git:github.com/<owner>/pi-software-factory@v0.3.0
 ```
 
 Pi can update unpinned Git package sources with its package update commands; pinned refs remain fixed until explicitly changed.
@@ -222,6 +238,13 @@ Typical configuration:
     "model": "jev-latest",
     "minChoiceConfidence": 0.6,
     "minNoulProbability": 0.65
+  },
+  "contextBudget": {
+    "enabled": true,
+    "warningTokens": 65000,
+    "checkpointTokens": 75000,
+    "hardLimitTokens": 88000,
+    "maxCheckpointsPerStage": 3
   },
   "runRoot": ".okf/work",
   "contextPaths": ["AGENTS.md", ".okf/project"],
@@ -299,7 +322,7 @@ Provider usage can be zero or incomplete if the configured OpenAI-compatible bac
 - The factory does not commit or push.
 - A clean working tree is required by default.
 - Low Jev confidence stops for human intervention.
-- Plan-gate `rescout`/`replan` requests stop rather than looping in v0.2.
+- Plan-gate `rescout`/`replan` requests still stop rather than looping in v0.3.
 - Deterministic checks are authoritative.
 - Final acceptance requires deterministic verification plus independent Astra review plus Jev acceptance.
 
@@ -327,8 +350,24 @@ pi-software-factory/
 ```
 
 
-## Transcript UI (v0.2.2)
+## Transcript UI
 
-v0.2.2 does not use Pi's dock widget. Factory progress is written as custom transcript entries, so it scrolls naturally with the conversation and is not clipped by terminal height. These entries are TUI/session state only and do not enter the LLM context. The currently executing stage is shown in Pi's one-line status bar.
+v0.3 continues the v0.2.2 transcript design and does not use Pi's dock widget. Factory progress is written as custom transcript entries, so it scrolls naturally with the conversation and is not clipped by terminal height. These entries are TUI/session state only and do not enter the LLM context. The currently executing stage is shown in Pi's one-line status bar.
 
 `/factory-status` appends the complete most-recent run summary and stage list to the transcript. Completed run state is also recovered from persisted session entries after an extension reload.
+
+
+## Qwen context budget
+
+The implementation and repair workers are checkpointable. With the defaults:
+
+```text
+warningTokens:            65000
+checkpointTokens:         75000
+hardLimitTokens:          88000
+maxCheckpointsPerStage:       3
+```
+
+At the warning threshold the transcript records context pressure. At the checkpoint threshold the controller queues a checkpoint instruction. The worker either finishes normally with `submit_result`, or emits `submit_checkpoint`. A checkpoint is persisted as `checkpoint-<stage>-<n>.json`, the Pi session is disposed, and a fresh Qwen session resumes from that compact record plus the original implementation contract.
+
+Pi auto-compaction remains enabled as a safety net before the hard limit. It is not the primary continuity mechanism.

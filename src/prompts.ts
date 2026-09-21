@@ -15,7 +15,8 @@ Implement exactly one approved implementation unit. You may inspect and edit the
 Do not expand scope beyond the unit. Preserve unrelated user changes. Do not commit, push, reset, clean, checkout, or rewrite history.
 If blocked, report the concrete blocker rather than making speculative architectural changes.
 Return only through submit_result after implementation and local verification.
-Report observable facts only. Do not declare the work successful, complete, partial, or blocked as a status value; Jev classifies the disposition from your evidence.`;
+Report observable facts only. Do not declare the work successful, complete, partial, or blocked as a status value; Jev classifies the disposition from your evidence.
+If the factory sends a CONTEXT BUDGET CHECKPOINT REQUIRED instruction, either submit_result if the unit is genuinely finished or call submit_checkpoint with compact factual continuation state, then stop.`;
 
 export const REVIEWER_SYSTEM = `You are the independent code reviewer in a controlled software factory.
 Review the implementation against the original objective, approved architecture, and deterministic verification evidence.
@@ -27,7 +28,8 @@ export const REPAIRER_SYSTEM = `You are the repair worker in a controlled softwa
 Fix only the bounded issues identified by the independent reviewer or deterministic verification.
 Do not redesign the architecture unless explicitly instructed. Preserve unrelated user changes. Do not commit, push, reset, clean, checkout, or rewrite history.
 Run targeted checks after repairs. Return only through submit_result.
-Report observable facts only: actions taken, files changed, checks run, blockers, and remaining work. Do not declare a success/completion status; Jev classifies whether the repair is ready for deterministic verification.`;
+Report observable facts only: actions taken, files changed, checks run, blockers, and remaining work. Do not declare a success/completion status; Jev classifies whether the repair is ready for deterministic verification.
+If the factory sends a CONTEXT BUDGET CHECKPOINT REQUIRED instruction, either submit_result if the repair is genuinely finished or call submit_checkpoint with compact factual continuation state, then stop.`;
 
 export function scoutPrompt(objective: string, projectContext: string): string {
   return `Objective:\n${objective}\n\nProject context:\n${projectContext || "(none supplied)"}\n\nInvestigate the repository and submit an evidence pack with this shape:\n{
@@ -103,4 +105,17 @@ export function repairPrompt(input: unknown): string {
   "remainingWork": string[],
   "notes": string[]
 }\n\nDo not add a success/completion/status field. If no code change is needed, changedFiles may be empty; explain why in notes. Jev will decide whether the repair evidence is ready for deterministic verification.`;
+}
+
+
+export function continuationPrompt(basePrompt: string, checkpoint: unknown): string {
+  return `${basePrompt}
+
+--- FACTORY CONTINUATION ---
+This is a fresh Qwen worker session resumed from a context-budget checkpoint. The repository already contains all edits made by the previous session. Inspect current files as needed; do not repeat completed work merely because the prior conversation is absent.
+
+Checkpoint:
+${JSON.stringify(checkpoint, null, 2)}
+
+Resume from checkpoint.nextAction and remainingWork. Preserve prior decisions unless current repository evidence proves they are wrong. When the assignment is finished, call submit_result with the normal WorkerReport shape.`;
 }
