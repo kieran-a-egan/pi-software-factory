@@ -24,7 +24,11 @@
   "verificationCommands": [],
   "maxRepairPasses": 1,
   "maxDiffCharsForReview": 120000,
-  "planningLoops": {\n    "maxRescoutPasses": 2,\n    "maxReplanPasses": 2\n  },\n  "contextBudget": {
+  "planningLoops": {
+    "maxRescoutPasses": 2,
+    "maxReplanPasses": 2
+  },
+  "contextBudget": {
     "enabled": true,
     "warningTokens": 65000,
     "checkpointTokens": 75000,
