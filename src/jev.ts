@@ -116,13 +116,19 @@ export class JevDecisionEngine {
 
   async gateWorker(input: {
     phase: "implementation" | "repair";
-    objective: string;
     assignment: unknown;
     report: WorkerReport;
     deterministicFailures?: Array<{ command: string; output: string }>;
   }): Promise<WorkerGateDecision> {
+    const state = {
+      phase: input.phase,
+      assignment: input.assignment,
+      report: input.report,
+      deterministicFailures: input.deterministicFailures,
+    };
+
     const response = await this.client.systemOne({
-      state: input,
+      state,
       questions: {
         disposition: choice(
           "Classify this worker report for workflow routing. The assignment object defines the worker's bounded scope; the overall objective is background only. Judge whether this assignment is complete enough to leave this worker and continue factory orchestration. Do not require work that belongs to a later implementation unit, and do not judge final software correctness because later units, deterministic verification, and independent review still follow.",
