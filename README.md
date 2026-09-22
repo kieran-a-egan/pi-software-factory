@@ -7,7 +7,7 @@ A Pi package that runs a controlled software-engineering pipeline using:
 - **local Qwen3.8-27B** for repository scouting, implementation, and repair
 - **deterministic tools** for Git/build/test/typecheck/lint truth
 
-Current version: **0.3.0**
+Current version: **0.4.0**
 
 ## Pipeline
 
@@ -49,38 +49,28 @@ Current version: **0.3.0**
 
 The controller owns the state machine. Models do not arbitrarily select the next agent.
 
-## v0.3 changes
+## v0.4 changes
 
-v0.3 adds proactive context management to the local Qwen implementation/repair tier while preserving the validated controller/Jev/Astra control flow.
+v0.4 keeps the v0.3 Qwen context-checkpoint mechanism and adds bounded planning recovery.
 
-Default policy for the ~98K advertised Qwen context:
+When Jev returns `rescout`, Qwen performs a targeted read-only evidence pass, the evidence is merged, Astra revises the architecture, and the plan gate runs again. When Jev returns `replan`, Astra revises the plan against the existing evidence and the gate runs again. Both loops are bounded and fall back to human intervention when their configured limits are exhausted.
 
-```text
-65K  warn
-75K  request factual checkpoint
-88K  hard safety region / Pi auto-compaction fallback
-```
+Jev also returns bounded focus classifications so the recovery pass is directed at the most likely gap, such as dependencies, tests, interfaces, security, architecture, sequencing, or verification.
 
-When a Qwen implementation or repair session crosses the checkpoint threshold, the controller asks it to emit a compact `WorkerCheckpoint`, persists that artifact, disposes the session, and resumes the same unit in a fresh Qwen session. Repository edits remain on disk; conversation history does not.
-
-Checkpoint artifacts contain:
+Runtime artifacts are ordinary JSON/JSONL and now live under:
 
 ```text
-unitId
-summary
-completedWork
-changedFiles
-decisions
-verifiedFacts
-remainingWork
-blockers
-relevantSymbols
-nextAction
+.pi/software-factory/runs/SF-<timestamp>/
 ```
 
-The factory records max context usage, Pi compactions, checkpoint requests, and checkpoint artifacts in the normal telemetry/run directory.
+They no longer live under `.okf`. The optional `.okf/project` context path remains available only for genuine OKF project context. If an existing config still contains the exact legacy default `"runRoot": ".pi/software-factory/runs"`, v0.4 transparently maps it to the new runtime location without moving or deleting historical runs.
 
-v0.3 intentionally leaves autonomous Jev `rescout` / `replan` loops for a later release.
+Default planning-loop limits:
+
+```text
+maxRescoutPasses: 2
+maxReplanPasses:  2
+```
 
 ## Requirements
 
@@ -122,7 +112,7 @@ npm install
 git init
 git branch -M main
 git add -A
-git commit -m "Software Factory v0.3.0"
+git commit -m "Software Factory v0.4.0"
 
 pi install (Get-Location).Path
 ```
@@ -168,14 +158,14 @@ The package manifest points directly to `software-factory.ts`, so the extension 
 Once the repository has a remote, tag releases and install the Git source instead of the local path:
 
 ```powershell
-git tag v0.3.0
+git tag v0.4.0
 git push origin main --tags
 ```
 
 Then, for example:
 
 ```text
-pi install git:github.com/<owner>/pi-software-factory@v0.3.0
+pi install git:github.com/<owner>/pi-software-factory@v0.4.0
 ```
 
 Pi can update unpinned Git package sources with its package update commands; pinned refs remain fixed until explicitly changed.
@@ -239,6 +229,10 @@ Typical configuration:
     "minChoiceConfidence": 0.6,
     "minNoulProbability": 0.65
   },
+  "planningLoops": {
+    "maxRescoutPasses": 2,
+    "maxReplanPasses": 2
+  },
   "contextBudget": {
     "enabled": true,
     "warningTokens": 65000,
@@ -246,7 +240,7 @@ Typical configuration:
     "hardLimitTokens": 88000,
     "maxCheckpointsPerStage": 3
   },
-  "runRoot": ".okf/work",
+  "runRoot": ".pi/software-factory/runs",
   "contextPaths": ["AGENTS.md", ".okf/project"],
   "contextMaxBytes": 180000,
   "requireCleanWorkingTree": true,
@@ -259,7 +253,7 @@ Typical configuration:
 }
 ```
 
-For projects where `.pi/software-factory.json` and `.okf/work/` are local-only, add them to `.git/info/exclude` or the repository's `.gitignore` as appropriate.
+For projects where `.pi/software-factory.json` and `.pi/software-factory/runs/` are local-only, add them to `.git/info/exclude` or the repository's `.gitignore` as appropriate.
 
 ## Commands
 
@@ -280,7 +274,7 @@ Redisplay the latest run from the current Pi session:
 Each run is written under:
 
 ```text
-.okf/work/SF-<timestamp>/
+.pi/software-factory/runs/SF-<timestamp>/
 ```
 
 Artifacts include the stage-specific evidence and gates plus:
@@ -322,7 +316,7 @@ Provider usage can be zero or incomplete if the configured OpenAI-compatible bac
 - The factory does not commit or push.
 - A clean working tree is required by default.
 - Low Jev confidence stops for human intervention.
-- Plan-gate `rescout`/`replan` requests still stop rather than looping in v0.3.
+- Plan-gate `rescout`/`replan` requests run bounded recovery loops before implementation; review-stage `replan` still requires human intervention.
 - Deterministic checks are authoritative.
 - Final acceptance requires deterministic verification plus independent Astra review plus Jev acceptance.
 
