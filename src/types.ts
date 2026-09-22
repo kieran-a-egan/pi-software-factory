@@ -108,6 +108,7 @@ export interface FactoryConfig {
   requireCleanWorkingTree: boolean;
   verificationCommands: string[];
   maxRepairPasses: number;
+  workerMaxRuntimeMinutes: number;
   maxDiffCharsForReview: number;
 }
 
