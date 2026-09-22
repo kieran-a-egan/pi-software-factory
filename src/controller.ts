@@ -148,6 +148,17 @@ function repoRelativeRunRoot(cwd: string, runRoot: string): string[] {
   return [rel];
 }
 
+function unexpectedReportedFiles(assignment: unknown, report: WorkerReport): string[] {
+  const filesExpected = (assignment as any)?.filesExpected;
+  if (!Array.isArray(filesExpected) || filesExpected.length === 0) return [];
+
+  const normalize = (value: string) => value.replace(/\\/g, "/").replace(/^\.\//, "");
+  const allowed = new Set(filesExpected.map((value: unknown) => normalize(String(value))));
+  return report.changedFiles
+    .map(normalize)
+    .filter((path) => !allowed.has(path));
+}
+
 export async function runFactory(
   cwd: string,
   objective: string,
@@ -291,6 +302,7 @@ export async function runFactory(
             validate: validateWorkerReport,
             contextBudget: config.contextBudget,
             validateCheckpoint: validateWorkerCheckpoint,
+            maxRuntimeMs: config.workerMaxRuntimeMinutes * 60_000,
             onContext: (level, usage) => {
               progress({
                 type: "context",
@@ -308,6 +320,12 @@ export async function runFactory(
         if (message.includes("context checkpoint threshold")) {
           state.finalStatus = "human";
           state.finalReason = `Qwen context checkpoint failed for ${input.label}: ${message}`;
+          setPhase("human");
+          return null;
+        }
+        if (message.includes("exceeded max runtime")) {
+          state.finalStatus = "human";
+          state.finalReason = `Qwen worker timed out for ${input.label}: ${message}`;
           setPhase("human");
           return null;
         }
@@ -357,6 +375,27 @@ export async function runFactory(
     deterministicFailures?: Array<{ command: string; output: string }>;
     artifactName: string;
   }): Promise<WorkerGateDecision | null> => {
+    if (input.phase === "implementation") {
+      const unexpectedFiles = unexpectedReportedFiles(input.assignment, input.report);
+      if (unexpectedFiles.length > 0) {
+        const violation = {
+          phase: input.phase,
+          label: input.label,
+          filesExpected: (input.assignment as any)?.filesExpected ?? [],
+          changedFiles: input.report.changedFiles,
+          unexpectedFiles,
+          at: new Date().toISOString(),
+        };
+        store.write(input.artifactName.replace(/\.json$/, "-scope-violation.json"), violation);
+        store.appendDecision({ stage: "worker-scope", ...violation });
+        state.finalStatus = "human";
+        state.finalReason =
+          `Worker reported edits outside the bounded file scope for ${input.label}: ${unexpectedFiles.join(", ")}.`;
+        setPhase("human");
+        return null;
+      }
+    }
+
     const gate = await runStage(
       { stage: "jev-worker-gate", label: input.label, actor: "jev", model: config.jev.model },
       () => jev.gateWorker({
@@ -602,14 +641,23 @@ export async function runFactory(
   state.workers = [];
   state.workerGates = [];
   state.checkpoints = [];
-  for (const unit of state.architecture.implementationUnits) {
+  for (const [unitIndex, unit] of state.architecture.implementationUnits.entries()) {
     const safeUnitId = unit.id.replace(/[^a-zA-Z0-9_.-]/g, "_");
+    const otherUnits = state.architecture.implementationUnits
+      .filter((_, index) => index !== unitIndex)
+      .map((other, index) => ({
+        id: other.id,
+        objective: other.objective,
+        filesExpected: other.filesExpected,
+        relation: index < unitIndex ? "already-completed" : "deferred",
+      }));
+
     const basePrompt = implementerPrompt({
-      objective,
       projectContext,
       architectureSummary: state.architecture!.summary,
       architecturalDecisions: state.architecture!.architecturalDecisions,
-      unit,
+      currentUnit: unit,
+      otherUnits,
     });
     const worker = await runCheckpointedQwenWorker({
       role: "implementer",
