@@ -80,6 +80,26 @@ export class JevDecisionEngine {
           critical: "Severe security, data-loss, compliance, or production risk",
         }),
         planComplete: noul("The plan covers the objective, relevant constraints, implementation units, and verification needed to execute safely."),
+        rescoutFocus: choice("If more repository evidence is needed, what is the primary evidence area to investigate next?", {
+          none: "No additional repository evidence is needed",
+          dependencies: "Dependencies, call sites, symbol relationships, or integration boundaries",
+          tests: "Existing tests, fixtures, test infrastructure, or verification behavior",
+          data_model: "Persistence, schemas, data flow, migrations, or domain models",
+          interfaces: "Public APIs, internal contracts, types, protocols, or extension points",
+          runtime_config: "Configuration, environment, build, deployment, or runtime wiring",
+          security: "Authentication, authorization, secrets, trust boundaries, or security controls",
+          other: "A repository-evidence gap outside the listed categories",
+        }),
+        replanFocus: choice("If the plan needs revision, what is the primary planning problem to fix?", {
+          none: "No planning revision is needed",
+          scope: "The plan is too broad, too narrow, or misses required work",
+          sequencing: "Implementation units, dependencies, or ordering need revision",
+          architecture: "The proposed design or integration approach needs revision",
+          verification: "The verification strategy or acceptance coverage is inadequate",
+          risk_controls: "Risk containment, rollout, security, or safety controls need revision",
+          assumptions: "The plan relies on unsupported or fragile assumptions",
+          other: "A planning problem outside the listed categories",
+        }),
       },
     });
 
@@ -87,6 +107,8 @@ export class JevDecisionEngine {
       action: response.answers.action.choice,
       implementationRisk: response.answers.implementationRisk.choice,
       planCompleteProbability: response.answers.planComplete.noul,
+      rescoutFocus: response.answers.rescoutFocus.choice,
+      replanFocus: response.answers.replanFocus.choice,
       confidence: response.answers.action.confidence,
       raw: response,
     };
