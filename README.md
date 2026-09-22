@@ -65,6 +65,8 @@ Runtime artifacts are ordinary JSON/JSONL and now live under:
 
 They no longer live under `.okf`. The optional `.okf/project` context path remains available only for genuine OKF project context. If an existing config still contains the exact legacy default `"runRoot": ".pi/software-factory/runs"`, v0.4 transparently maps it to the new runtime location without moving or deleting historical runs.
 
+Worker stages also have a wall-clock watchdog. `workerMaxRuntimeMinutes` defaults to 20; if an implementation or repair session exceeds it, Pi aborts that subagent and the factory routes to `HUMAN` rather than running indefinitely. Implementation units are also treated as hard worker scope: when `filesExpected` is present, reported edits outside that set stop the run for review.
+
 Default planning-loop limits:
 
 ```text
@@ -249,6 +251,7 @@ Typical configuration:
     "npm run typecheck"
   ],
   "maxRepairPasses": 1,
+  "workerMaxRuntimeMinutes": 20,
   "maxDiffCharsForReview": 120000
 }
 ```
