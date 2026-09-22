@@ -25,7 +25,11 @@ export const DEFAULT_CONFIG: FactoryConfig = {
     hardLimitTokens: 88_000,
     maxCheckpointsPerStage: 3,
   },
-  runRoot: ".okf/work",
+  planningLoops: {
+    maxRescoutPasses: 2,
+    maxReplanPasses: 2,
+  },
+  runRoot: ".pi/software-factory/runs",
   contextPaths: ["AGENTS.md", ".okf/project"],
   contextMaxBytes: 180_000,
   requireCleanWorkingTree: true,
@@ -53,6 +57,13 @@ export function loadConfig(cwd: string): FactoryConfig {
   const parsed = JSON.parse(readFileSync(configPath, "utf8"));
   const config = deepMerge(structuredClone(DEFAULT_CONFIG), parsed);
 
+  // v0.3 and earlier recommended .okf/work even though run artifacts are ordinary
+  // JSON/JSONL rather than OKF documents. Treat that exact legacy default as a
+  // migration alias without moving or deleting historical runs.
+  if (parsed.runRoot === ".okf/work") {
+    config.runRoot = DEFAULT_CONFIG.runRoot;
+  }
+
   const budget = config.contextBudget;
   if (
     !Number.isSafeInteger(budget.warningTokens) ||
@@ -68,6 +79,14 @@ export function loadConfig(cwd: string): FactoryConfig {
   }
   if (!Number.isSafeInteger(budget.maxCheckpointsPerStage) || budget.maxCheckpointsPerStage < 0) {
     throw new Error("Invalid contextBudget.maxCheckpointsPerStage: expected a non-negative integer.");
+  }
+
+  const planning = config.planningLoops;
+  if (!Number.isSafeInteger(planning.maxRescoutPasses) || planning.maxRescoutPasses < 0) {
+    throw new Error("Invalid planningLoops.maxRescoutPasses: expected a non-negative integer.");
+  }
+  if (!Number.isSafeInteger(planning.maxReplanPasses) || planning.maxReplanPasses < 0) {
+    throw new Error("Invalid planningLoops.maxReplanPasses: expected a non-negative integer.");
   }
 
   if (!isAbsolute(config.runRoot)) config.runRoot = join(cwd, config.runRoot);
