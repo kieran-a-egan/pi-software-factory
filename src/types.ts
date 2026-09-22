@@ -28,6 +28,11 @@ export interface ContextBudgetConfig {
   maxCheckpointsPerStage: number;
 }
 
+export interface PlanningLoopConfig {
+  maxRescoutPasses: number;
+  maxReplanPasses: number;
+}
+
 export interface WorkerCheckpoint {
   unitId: string;
   summary: string;
@@ -96,6 +101,7 @@ export interface FactoryConfig {
     minNoulProbability: number;
   };
   contextBudget: ContextBudgetConfig;
+  planningLoops: PlanningLoopConfig;
   runRoot: string;
   contextPaths: string[];
   contextMaxBytes: number;
@@ -148,6 +154,8 @@ export interface PlanGateDecision {
   action: "proceed" | "rescout" | "replan" | "human";
   implementationRisk: "low" | "medium" | "high" | "critical";
   planCompleteProbability: number;
+  rescoutFocus: "none" | "dependencies" | "tests" | "data_model" | "interfaces" | "runtime_config" | "security" | "other";
+  replanFocus: "none" | "scope" | "sequencing" | "architecture" | "verification" | "risk_controls" | "assumptions" | "other";
   confidence: number;
   raw: unknown;
 }
@@ -228,6 +236,9 @@ export interface FactoryRunState {
   review?: ReviewResult;
   reviewGate?: ReviewGateDecision;
   repairPasses: number;
+  rescoutPasses: number;
+  replanPasses: number;
+  planGatePasses: number;
   telemetry?: StageTelemetry[];
   finalStatus?: "accepted" | "human" | "failed" | "blocked";
   finalReason?: string;
