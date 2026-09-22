@@ -119,3 +119,12 @@ ${JSON.stringify(checkpoint, null, 2)}
 
 Resume from checkpoint.nextAction and remainingWork. Preserve prior decisions unless current repository evidence proves they are wrong. When the assignment is finished, call submit_result with the normal WorkerReport shape.`;
 }
+
+
+export function rescoutPrompt(input: unknown): string {
+  return `Perform a targeted repository rescout for this factory planning loop:\n${JSON.stringify(input, null, 2)}\n\nInvestigate the requested evidence focus, follow relevant symbols/tests/configuration, and return a supplemental evidence pack using the normal ScoutResult shape. The unknowns array must describe what remains unresolved after this pass, not simply repeat resolved prior unknowns.`;
+}
+
+export function replanPrompt(input: unknown): string {
+  return `Revise the implementation architecture for this factory planning loop:\n${JSON.stringify(input, null, 2)}\n\nAddress the Jev planning focus explicitly. Preserve prior decisions that are still supported by repository evidence, but change scope, sequencing, architecture, verification, controls, or assumptions where needed. Return the normal ArchitectureResult shape.`;
+}
