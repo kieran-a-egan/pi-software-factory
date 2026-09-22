@@ -162,11 +162,11 @@ export class JevDecisionEngine {
     const response = await this.client.systemOne({
       state,
       questions: {
-        action: choice("Given the independent review and deterministic verification, what should happen next?", {
-          accept: "The change can be accepted by the factory",
-          rework: "The implementation has bounded issues that the implementation worker should fix",
-          replan: "The implementation exposes a deeper architectural or planning problem",
-          human: "Residual ambiguity or risk should be resolved by a human",
+        action: choice("Given the independent review and deterministic verification, what should happen next? Treat the review verdict and explicit acceptance criteria as primary routing evidence.", {
+          accept: "Deterministic verification passed and the review identifies no unmet explicit acceptance criterion or material issue that should be fixed before acceptance. Non-blocking info/minor observations may remain.",
+          rework: "The review identifies a concrete bounded implementation or test issue, including an unmet explicit acceptance criterion, that should be fixed before acceptance without changing the approved architecture.",
+          replan: "The review identifies a deeper architectural, scope, sequencing, or planning problem that cannot be resolved as a bounded implementation repair.",
+          human: "Residual ambiguity, product intent, policy, or risk cannot be safely resolved by bounded implementation or planning work.",
         }),
         residualRisk: choice("Classify the residual risk if the current change were accepted without further work.", {
           low: "No material unresolved issue is evident",
