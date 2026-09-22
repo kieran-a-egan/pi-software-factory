@@ -125,12 +125,12 @@ export class JevDecisionEngine {
       state: input,
       questions: {
         disposition: choice(
-          "Classify this worker report for workflow routing. Judge whether the bounded assignment is ready to proceed to deterministic verification; do not judge final software correctness, because tests and independent review happen afterwards.",
+          "Classify this worker report for workflow routing. The assignment object defines the worker's bounded scope; the overall objective is background only. Judge whether this assignment is complete enough to leave this worker and continue factory orchestration. Do not require work that belongs to a later implementation unit, and do not judge final software correctness because later units, deterministic verification, and independent review still follow.",
           {
-            ready: "The report coherently addresses the assigned work and is ready for deterministic verification. Empty changedFiles is valid when no code change was actually required.",
-            continue: "The report indicates bounded implementation or repair work still remains and the worker should continue before verification.",
-            blocked: "A concrete blocker requires external input, unavailable dependency, permission, product decision, or architectural change before the worker can proceed.",
-            invalid: "The report is materially inconsistent with the assignment, lacks enough evidence to route safely, or does not describe the assigned work.",
+            ready: "The report coherently addresses the bounded assignment and no work remains inside this assignment. Work explicitly belonging to later implementation units does not prevent ready. Empty changedFiles is valid when no code change was actually required.",
+            continue: "Concrete work remains inside this same bounded assignment and the same worker should continue before the factory advances.",
+            blocked: "This bounded assignment cannot proceed because it requires external input, an unavailable dependency, permission, product decision, or architectural change.",
+            invalid: "The report is materially inconsistent with the bounded assignment, lacks enough evidence to route safely, or does not describe the assigned work.",
           },
         ),
       },
