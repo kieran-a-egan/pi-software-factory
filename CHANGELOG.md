@@ -10,6 +10,9 @@
 - keep `.okf/project` only as an optional source for genuine OKF project context
 - exclude the runtime run directory from factory Git-clean/status checks so operational artifacts do not dirty the working tree
 - keep review-stage `replan` conservative: it still requires human intervention after implementation has begun
+- enforce implementation-unit file scope before Jev worker routing; reported edits outside `filesExpected` stop for human review
+- pass deferred/completed unit context to Qwen so workers do not perform later units early
+- add a configurable worker watchdog (`workerMaxRuntimeMinutes`, default 20) that aborts a Qwen implementation/repair session and routes to human instead of allowing an unbounded stage
 
 
 ## 0.3.0
