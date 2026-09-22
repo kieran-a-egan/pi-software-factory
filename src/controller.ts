@@ -361,7 +361,6 @@ export async function runFactory(
       { stage: "jev-worker-gate", label: input.label, actor: "jev", model: config.jev.model },
       () => jev.gateWorker({
         phase: input.phase,
-        objective,
         assignment: input.assignment,
         report: input.report,
         deterministicFailures: input.deterministicFailures,
