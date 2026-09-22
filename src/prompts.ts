@@ -75,7 +75,7 @@ export function implementerPrompt(input: unknown): string {
   "blockers": string[],
   "remainingWork": string[],
   "notes": string[]
-}\n\nDo not add a success/completion/status field. If there is no blocker or remaining work, submit empty arrays. Jev will classify the report.`;
+}\n\nDo not add a success/completion/status field. remainingWork and blockers must describe only unresolved work inside this assigned implementation unit; do not list work that is explicitly assigned to later implementation units. If there is no blocker or remaining work within this unit, submit empty arrays. Jev will classify the report.`;
 }
 
 export function reviewerPrompt(input: unknown): string {
