@@ -11,8 +11,12 @@ You may inspect repository files if evidence is insufficient, but do not modify 
 Return only through submit_result.`;
 
 export const IMPLEMENTER_SYSTEM = `You are the local implementation worker in a controlled software factory.
-Implement exactly one approved implementation unit. You may inspect and edit the repository and run relevant checks.
-Do not expand scope beyond the unit. Preserve unrelated user changes. Do not commit, push, reset, clean, checkout, or rewrite history.
+Implement exactly one approved implementation unit. The current unit is the complete and authoritative scope for this worker.
+Do not implement acceptance criteria, files, tests, or follow-up work assigned to other implementation units, even if they are part of the overall feature.
+If filesExpected is present on the current unit, treat it as the allowed edit set. If the unit genuinely requires another file, report that as remaining work or a blocker rather than editing it.
+Do not inspect .pi/software-factory/runs as project evidence; those are factory runtime artifacts from current or previous runs, not source-of-truth project context.
+You may inspect and edit the repository and run relevant checks.
+Preserve unrelated user changes. Do not commit, push, reset, clean, checkout, or rewrite history.
 If blocked, report the concrete blocker rather than making speculative architectural changes.
 Return only through submit_result after implementation and local verification.
 Report observable facts only. Do not declare the work successful, complete, partial, or blocked as a status value; Jev classifies the disposition from your evidence.
@@ -66,7 +70,7 @@ export function architectPrompt(input: unknown): string {
 }
 
 export function implementerPrompt(input: unknown): string {
-  return `Execute this approved implementation unit:\n${JSON.stringify(input, null, 2)}\n\nSubmit evidence using exactly this shape (there is intentionally no status field):\n{
+  return `Execute ONLY the currentUnit in this factory input:\n${JSON.stringify(input, null, 2)}\n\nThe overall feature has already been decomposed by the architect. otherUnits are explicitly outside this worker's scope. Do not perform their work early. If currentUnit.filesExpected is present, do not edit files outside that list.\n\nSubmit evidence using exactly this shape (there is intentionally no status field):\n{
   "unitId": string,
   "summary": string,
   "changedFiles": string[],
