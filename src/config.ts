@@ -29,6 +29,10 @@ export const DEFAULT_CONFIG: FactoryConfig = {
     maxRescoutPasses: 2,
     maxReplanPasses: 2,
   },
+  parallelImplementation: {
+    enabled: true,
+    maxParallelUnits: 2,
+  },
   runRoot: ".pi/software-factory/runs",
   contextPaths: ["AGENTS.md", ".okf/project"],
   contextMaxBytes: 180_000,
@@ -89,6 +93,14 @@ export function loadConfig(cwd: string): FactoryConfig {
   }
   if (!Number.isSafeInteger(planning.maxReplanPasses) || planning.maxReplanPasses < 0) {
     throw new Error("Invalid planningLoops.maxReplanPasses: expected a non-negative integer.");
+  }
+
+  const parallel = config.parallelImplementation;
+  if (typeof parallel.enabled !== "boolean") {
+    throw new Error("Invalid parallelImplementation.enabled: expected a boolean.");
+  }
+  if (!Number.isSafeInteger(parallel.maxParallelUnits) || parallel.maxParallelUnits < 1) {
+    throw new Error("Invalid parallelImplementation.maxParallelUnits: expected an integer >= 1.");
   }
 
   if (!Number.isSafeInteger(config.maxWorkerContinuationPasses) || config.maxWorkerContinuationPasses < 0) {
