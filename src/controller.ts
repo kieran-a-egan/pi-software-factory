@@ -612,6 +612,7 @@ export async function runFactory(
       });
       recordDecision({
         stage: "worker-continuation",
+        at: record.createdAt,
         ...record,
         decision: gate,
       });
