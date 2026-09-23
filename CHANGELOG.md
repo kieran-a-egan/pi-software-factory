@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0
+
+- add bounded Jev-driven plan-gate `rescout` and `replan` loops before implementation
+- add targeted rescout/replan focus classifications and persist revised evidence, architecture, and gate artifacts
+- add configurable `planningLoops.maxRescoutPasses` and `planningLoops.maxReplanPasses` safeguards
+- move runtime JSON/JSONL artifacts from `.okf/work` to `.pi/software-factory/runs`
+- treat the legacy `.okf/work` config value as a migration alias without moving or deleting historical runs
+- keep `.okf/project` only as an optional source for genuine OKF project context
+- exclude the runtime run directory from factory Git-clean/status checks so operational artifacts do not dirty the working tree
+- keep review-stage `replan` conservative: it still requires human intervention after implementation has begun
+- enforce implementation-unit file scope before Jev worker routing; reported edits outside `filesExpected` stop for human review
+- pass deferred/completed unit context to Qwen so workers do not perform later units early
+- add a configurable worker watchdog (`workerMaxRuntimeMinutes`, default 20) that aborts a Qwen implementation/repair session and routes to human instead of allowing an unbounded stage
+
+
 ## 0.3.0
 
 - add Qwen context-budget accounting for implementation and repair workers

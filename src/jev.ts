@@ -80,6 +80,26 @@ export class JevDecisionEngine {
           critical: "Severe security, data-loss, compliance, or production risk",
         }),
         planComplete: noul("The plan covers the objective, relevant constraints, implementation units, and verification needed to execute safely."),
+        rescoutFocus: choice("If more repository evidence is needed, what is the primary evidence area to investigate next?", {
+          none: "No additional repository evidence is needed",
+          dependencies: "Dependencies, call sites, symbol relationships, or integration boundaries",
+          tests: "Existing tests, fixtures, test infrastructure, or verification behavior",
+          data_model: "Persistence, schemas, data flow, migrations, or domain models",
+          interfaces: "Public APIs, internal contracts, types, protocols, or extension points",
+          runtime_config: "Configuration, environment, build, deployment, or runtime wiring",
+          security: "Authentication, authorization, secrets, trust boundaries, or security controls",
+          other: "A repository-evidence gap outside the listed categories",
+        }),
+        replanFocus: choice("If the plan needs revision, what is the primary planning problem to fix?", {
+          none: "No planning revision is needed",
+          scope: "The plan is too broad, too narrow, or misses required work",
+          sequencing: "Implementation units, dependencies, or ordering need revision",
+          architecture: "The proposed design or integration approach needs revision",
+          verification: "The verification strategy or acceptance coverage is inadequate",
+          risk_controls: "Risk containment, rollout, security, or safety controls need revision",
+          assumptions: "The plan relies on unsupported or fragile assumptions",
+          other: "A planning problem outside the listed categories",
+        }),
       },
     });
 
@@ -87,6 +107,8 @@ export class JevDecisionEngine {
       action: response.answers.action.choice,
       implementationRisk: response.answers.implementationRisk.choice,
       planCompleteProbability: response.answers.planComplete.noul,
+      rescoutFocus: response.answers.rescoutFocus.choice,
+      replanFocus: response.answers.replanFocus.choice,
       confidence: response.answers.action.confidence,
       raw: response,
     };
@@ -94,21 +116,27 @@ export class JevDecisionEngine {
 
   async gateWorker(input: {
     phase: "implementation" | "repair";
-    objective: string;
     assignment: unknown;
     report: WorkerReport;
     deterministicFailures?: Array<{ command: string; output: string }>;
   }): Promise<WorkerGateDecision> {
+    const state = {
+      phase: input.phase,
+      assignment: input.assignment,
+      report: input.report,
+      deterministicFailures: input.deterministicFailures,
+    };
+
     const response = await this.client.systemOne({
-      state: input,
+      state,
       questions: {
         disposition: choice(
-          "Classify this worker report for workflow routing. Judge whether the bounded assignment is ready to proceed to deterministic verification; do not judge final software correctness, because tests and independent review happen afterwards.",
+          "Classify this worker report for workflow routing. The assignment object defines the worker's bounded scope; the overall objective is background only. Judge whether this assignment is complete enough to leave this worker and continue factory orchestration. Do not require work that belongs to a later implementation unit, and do not judge final software correctness because later units, deterministic verification, and independent review still follow.",
           {
-            ready: "The report coherently addresses the assigned work and is ready for deterministic verification. Empty changedFiles is valid when no code change was actually required.",
-            continue: "The report indicates bounded implementation or repair work still remains and the worker should continue before verification.",
-            blocked: "A concrete blocker requires external input, unavailable dependency, permission, product decision, or architectural change before the worker can proceed.",
-            invalid: "The report is materially inconsistent with the assignment, lacks enough evidence to route safely, or does not describe the assigned work.",
+            ready: "The report coherently addresses the bounded assignment and no work remains inside this assignment. Work explicitly belonging to later implementation units does not prevent ready. Empty changedFiles is valid when no code change was actually required.",
+            continue: "Concrete work remains inside this same bounded assignment and the same worker should continue before the factory advances.",
+            blocked: "This bounded assignment cannot proceed because it requires external input, an unavailable dependency, permission, product decision, or architectural change.",
+            invalid: "The report is materially inconsistent with the bounded assignment, lacks enough evidence to route safely, or does not describe the assigned work.",
           },
         ),
       },
@@ -140,11 +168,11 @@ export class JevDecisionEngine {
     const response = await this.client.systemOne({
       state,
       questions: {
-        action: choice("Given the independent review and deterministic verification, what should happen next?", {
-          accept: "The change can be accepted by the factory",
-          rework: "The implementation has bounded issues that the implementation worker should fix",
-          replan: "The implementation exposes a deeper architectural or planning problem",
-          human: "Residual ambiguity or risk should be resolved by a human",
+        action: choice("Given the independent review and deterministic verification, what should happen next? Treat the review verdict and explicit acceptance criteria as primary routing evidence.", {
+          accept: "Deterministic verification passed and the review identifies no unmet explicit acceptance criterion or material issue that should be fixed before acceptance. Non-blocking info/minor observations may remain.",
+          rework: "The review identifies a concrete bounded implementation or test issue, including an unmet explicit acceptance criterion, that should be fixed before acceptance without changing the approved architecture.",
+          replan: "The review identifies a deeper architectural, scope, sequencing, or planning problem that cannot be resolved as a bounded implementation repair.",
+          human: "Residual ambiguity, product intent, policy, or risk cannot be safely resolved by bounded implementation or planning work.",
         }),
         residualRisk: choice("Classify the residual risk if the current change were accepted without further work.", {
           low: "No material unresolved issue is evident",

@@ -14,7 +14,7 @@
     "minChoiceConfidence": 0.6,
     "minNoulProbability": 0.65
   },
-  "runRoot": ".okf/work",
+  "runRoot": ".pi/software-factory/runs",
   "contextPaths": [
     "AGENTS.md",
     ".okf/project"
@@ -23,7 +23,12 @@
   "requireCleanWorkingTree": true,
   "verificationCommands": [],
   "maxRepairPasses": 1,
+  "workerMaxRuntimeMinutes": 20,
   "maxDiffCharsForReview": 120000,
+  "planningLoops": {
+    "maxRescoutPasses": 2,
+    "maxReplanPasses": 2
+  },
   "contextBudget": {
     "enabled": true,
     "warningTokens": 65000,

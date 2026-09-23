@@ -1,4 +1,5 @@
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { isAbsolute, relative } from "node:path";
 import { loadProjectContext } from "./context.js";
 import { resolveRunRoot } from "./config.js";
 import { JevDecisionEngine } from "./jev.js";
@@ -21,6 +22,8 @@ import {
   repairPrompt,
   reviewerPrompt,
   scoutPrompt,
+  rescoutPrompt,
+  replanPrompt,
 } from "./prompts.js";
 import { createRunStore } from "./storage.js";
 import type {
@@ -28,6 +31,7 @@ import type {
   FactoryProgressEvent,
   FactoryRunState,
   ReviewResult,
+  ScoutResult,
   StageTelemetry,
   TokenUsageSnapshot,
   VerificationResult,
@@ -105,6 +109,9 @@ function buildRunSummary(state: FactoryRunState) {
     finalStatus: state.finalStatus,
     finalReason: state.finalReason,
     repairPasses: state.repairPasses,
+    rescoutPasses: state.rescoutPasses,
+    replanPasses: state.replanPasses,
+    planGatePasses: state.planGatePasses,
     checkpointCount: state.checkpoints?.length ?? 0,
     stageCount: telemetry.length,
     totalStageDurationMs: telemetry.reduce((sum, stage) => sum + stage.durationMs, 0),
@@ -114,13 +121,53 @@ function buildRunSummary(state: FactoryRunState) {
   };
 }
 
+
+function mergeScoutResults(base: ScoutResult, supplemental: ScoutResult): ScoutResult {
+  const uniqueStrings = (values: string[]) => [...new Set(values)];
+  const fileMap = new Map(base.files.map((item) => [item.path, item]));
+  for (const item of supplemental.files) fileMap.set(item.path, item);
+  const symbolMap = new Map(base.symbols.map((item) => [`${item.path}::${item.name}`, item]));
+  for (const item of supplemental.symbols) symbolMap.set(`${item.path}::${item.name}`, item);
+
+  return {
+    summary: `${base.summary}\n\nAdditional evidence: ${supplemental.summary}`,
+    files: [...fileMap.values()],
+    symbols: [...symbolMap.values()],
+    relationships: uniqueStrings([...base.relationships, ...supplemental.relationships]),
+    constraints: uniqueStrings([...base.constraints, ...supplemental.constraints]),
+    tests: uniqueStrings([...base.tests, ...supplemental.tests]),
+    unknowns: supplemental.unknowns,
+    recommendedReads: uniqueStrings([...base.recommendedReads, ...supplemental.recommendedReads]),
+  };
+}
+
+function repoRelativeRunRoot(cwd: string, runRoot: string): string[] {
+  if (!isAbsolute(runRoot)) return [runRoot.replace(/\\/g, "/")];
+  const rel = relative(cwd, runRoot).replace(/\\/g, "/");
+  if (!rel || rel === "." || rel.startsWith("../") || rel === "..") return [];
+  return [rel];
+}
+
+function unexpectedReportedFiles(assignment: unknown, report: WorkerReport): string[] {
+  const filesExpected = (assignment as any)?.filesExpected;
+  if (!Array.isArray(filesExpected) || filesExpected.length === 0) return [];
+
+  const normalize = (value: string) => value.replace(/\\/g, "/").replace(/^\.\//, "");
+  const allowed = new Set(filesExpected.map((value: unknown) => normalize(String(value))));
+  return report.changedFiles
+    .map(normalize)
+    .filter((path) => !allowed.has(path));
+}
+
 export async function runFactory(
   cwd: string,
   objective: string,
   config: FactoryConfig,
   progress: ProgressFn,
 ): Promise<FactoryRunState> {
-  const store = createRunStore(resolveRunRoot(cwd, config));
+  const resolvedRunRoot = resolveRunRoot(cwd, config);
+  const runtimeStatusIgnores = repoRelativeRunRoot(cwd, resolvedRunRoot);
+  const store = createRunStore(resolvedRunRoot);
   const id = store.dir.split(/[\\/]/).pop()!;
   const state: FactoryRunState = {
     id,
@@ -129,6 +176,9 @@ export async function runFactory(
     objective,
     phase: "initializing",
     repairPasses: 0,
+    rescoutPasses: 0,
+    replanPasses: 0,
+    planGatePasses: 0,
     telemetry: [],
   };
 
@@ -200,7 +250,7 @@ export async function runFactory(
 
   const beforeStatus = await runStage(
     { stage: "preflight", actor: "controller" },
-    () => gitStatus(cwd),
+    () => gitStatus(cwd, runtimeStatusIgnores),
   );
   store.write("preflight.json", { gitStatus: beforeStatus });
   if (config.requireCleanWorkingTree && beforeStatus.trim()) {
@@ -252,6 +302,7 @@ export async function runFactory(
             validate: validateWorkerReport,
             contextBudget: config.contextBudget,
             validateCheckpoint: validateWorkerCheckpoint,
+            maxRuntimeMs: config.workerMaxRuntimeMinutes * 60_000,
             onContext: (level, usage) => {
               progress({
                 type: "context",
@@ -269,6 +320,12 @@ export async function runFactory(
         if (message.includes("context checkpoint threshold")) {
           state.finalStatus = "human";
           state.finalReason = `Qwen context checkpoint failed for ${input.label}: ${message}`;
+          setPhase("human");
+          return null;
+        }
+        if (message.includes("exceeded max runtime")) {
+          state.finalStatus = "human";
+          state.finalReason = `Qwen worker timed out for ${input.label}: ${message}`;
           setPhase("human");
           return null;
         }
@@ -318,11 +375,31 @@ export async function runFactory(
     deterministicFailures?: Array<{ command: string; output: string }>;
     artifactName: string;
   }): Promise<WorkerGateDecision | null> => {
+    if (input.phase === "implementation") {
+      const unexpectedFiles = unexpectedReportedFiles(input.assignment, input.report);
+      if (unexpectedFiles.length > 0) {
+        const violation = {
+          phase: input.phase,
+          label: input.label,
+          filesExpected: (input.assignment as any)?.filesExpected ?? [],
+          changedFiles: input.report.changedFiles,
+          unexpectedFiles,
+          at: new Date().toISOString(),
+        };
+        store.write(input.artifactName.replace(/\.json$/, "-scope-violation.json"), violation);
+        store.appendDecision({ stage: "worker-scope", ...violation });
+        state.finalStatus = "human";
+        state.finalReason =
+          `Worker reported edits outside the bounded file scope for ${input.label}: ${unexpectedFiles.join(", ")}.`;
+        setPhase("human");
+        return null;
+      }
+    }
+
     const gate = await runStage(
       { stage: "jev-worker-gate", label: input.label, actor: "jev", model: config.jev.model },
       () => jev.gateWorker({
         phase: input.phase,
-        objective,
         assignment: input.assignment,
         report: input.report,
         deterministicFailures: input.deterministicFailures,
@@ -350,7 +427,7 @@ export async function runFactory(
 
     if (gate.disposition !== "ready") {
       state.finalStatus = "human";
-      state.finalReason = `Jev classified ${input.label} as ${gate.disposition}. v0.3 stops rather than auto-continuing worker work.`;
+      state.finalReason = `Jev classified ${input.label} as ${gate.disposition}. v0.4 stops rather than auto-continuing worker work.`;
       setPhase("human");
       return null;
     }
@@ -404,32 +481,183 @@ export async function runFactory(
   state.architecture = architectureRun.result;
   store.write("architecture.json", state.architecture);
 
-  state.planGate = await runStage(
-    { stage: "jev-plan-gate", actor: "jev", model: config.jev.model },
-    () => jev.gatePlan({ objective, scout: state.scout!, architecture: state.architecture! }),
-    (value) => jevExtras(value, config.jev.model),
-  );
-  store.write("plan-gate.json", state.planGate);
-  store.appendDecision({ stage: "plan-gate", at: new Date().toISOString(), decision: state.planGate });
+  const runPlanGate = async (label: string | undefined, artifactName: string) => {
+    state.planGatePasses += 1;
+    const gate = await runStage(
+      { stage: "jev-plan-gate", label, actor: "jev", model: config.jev.model },
+      () => jev.gatePlan({ objective, scout: state.scout!, architecture: state.architecture! }),
+      (value) => jevExtras(value, config.jev.model),
+    );
+    state.planGate = gate;
+    store.write(artifactName, gate);
+    store.appendDecision({
+      stage: "plan-gate",
+      pass: state.planGatePasses,
+      label,
+      at: new Date().toISOString(),
+      decision: gate,
+    });
+    return gate;
+  };
 
-  if (state.planGate.confidence < config.jev.minChoiceConfidence || state.planGate.planCompleteProbability < config.jev.minNoulProbability) {
-    return stop("human", "Jev plan gate confidence/completeness is below configured thresholds.");
+  const reviseArchitecture = async (input: {
+    label: string;
+    artifactName: string;
+    trigger: "rescout" | "replan";
+    triggerPass: number;
+    previousArchitecture: typeof state.architecture;
+    gate: NonNullable<typeof state.planGate>;
+  }) => {
+    const run = await runStage(
+      { stage: "astra-replan", label: input.label, actor: "astra", model: `${config.astra.provider}/${config.astra.model}` },
+      () => runAgent({
+        role: "architect",
+        cwd,
+        model: config.astra,
+        systemPrompt: ARCHITECT_SYSTEM,
+        prompt: replanPrompt({
+          objective,
+          intake: state.intake!,
+          projectContext,
+          evidence: state.scout!,
+          previousArchitecture: input.previousArchitecture,
+          planGate: input.gate,
+          trigger: input.trigger,
+          triggerPass: input.triggerPass,
+          focus: input.trigger === "rescout" ? input.gate.rescoutFocus : input.gate.replanFocus,
+        }),
+        modelRuntime,
+        tools: readOnlyTools(),
+        validate: validateArchitecture,
+      }),
+      agentExtras,
+    );
+    state.architecture = run.result;
+    store.write(input.artifactName, state.architecture);
+  };
+
+  await runPlanGate(undefined, "plan-gate.json");
+
+  while (true) {
+    const gate = state.planGate!;
+
+    if (gate.confidence < config.jev.minChoiceConfidence) {
+      return stop("human", `Jev plan gate confidence is below threshold: ${gate.confidence.toFixed(3)}.`);
+    }
+
+    if (gate.action === "proceed") {
+      if (gate.planCompleteProbability < config.jev.minNoulProbability) {
+        return stop(
+          "human",
+          `Jev selected proceed but plan completeness is below threshold: ${gate.planCompleteProbability.toFixed(3)}.`,
+        );
+      }
+      break;
+    }
+
+    if (gate.action === "human") {
+      return stop("human", "Jev plan gate requested human intervention.");
+    }
+
+    if (gate.action === "rescout") {
+      if (state.rescoutPasses >= config.planningLoops.maxRescoutPasses) {
+        return stop(
+          "human",
+          `Jev requested another rescout after reaching maxRescoutPasses (${config.planningLoops.maxRescoutPasses}).`,
+        );
+      }
+
+      state.rescoutPasses += 1;
+      const pass = state.rescoutPasses;
+      const previousArchitecture = state.architecture;
+      const supplementalRun = await runStage(
+        { stage: "qwen-rescout", label: `pass ${pass} · ${gate.rescoutFocus}`, actor: "qwen", model: `${config.qwen.provider}/${config.qwen.model}` },
+        () => runAgent({
+          role: "scout",
+          cwd,
+          model: config.qwen,
+          systemPrompt: SCOUT_SYSTEM,
+          prompt: rescoutPrompt({
+            objective,
+            projectContext,
+            focus: gate.rescoutFocus,
+            planGate: gate,
+            priorEvidence: state.scout!,
+            previousArchitecture,
+            pass,
+          }),
+          modelRuntime,
+          tools: readOnlyTools(),
+          validate: validateScout,
+        }),
+        agentExtras,
+      );
+      store.write(`evidence-rescout-${pass}.json`, supplementalRun.result);
+      state.scout = mergeScoutResults(state.scout!, supplementalRun.result);
+      store.write(`evidence-merged-${pass}.json`, state.scout);
+
+      await reviseArchitecture({
+        label: `after rescout ${pass}`,
+        artifactName: `architecture-after-rescout-${pass}.json`,
+        trigger: "rescout",
+        triggerPass: pass,
+        previousArchitecture,
+        gate,
+      });
+      await runPlanGate(`after rescout ${pass}`, `plan-gate-after-rescout-${pass}.json`);
+      continue;
+    }
+
+    if (gate.action === "replan") {
+      if (state.replanPasses >= config.planningLoops.maxReplanPasses) {
+        return stop(
+          "human",
+          `Jev requested another replan after reaching maxReplanPasses (${config.planningLoops.maxReplanPasses}).`,
+        );
+      }
+
+      state.replanPasses += 1;
+      const pass = state.replanPasses;
+      const previousArchitecture = state.architecture;
+      await reviseArchitecture({
+        label: `pass ${pass} · ${gate.replanFocus}`,
+        artifactName: `architecture-replan-${pass}.json`,
+        trigger: "replan",
+        triggerPass: pass,
+        previousArchitecture,
+        gate,
+      });
+      await runPlanGate(`after replan ${pass}`, `plan-gate-after-replan-${pass}.json`);
+      continue;
+    }
   }
-  if (state.planGate.action !== "proceed") {
-    return stop("human", `Plan gate requested ${state.planGate.action}; v0.3 stops rather than auto-looping plan/scout.`);
+
+  if (state.rescoutPasses > 0 || state.replanPasses > 0) {
+    store.write("evidence-final.json", state.scout);
+    store.write("architecture-final.json", state.architecture);
+    store.write("plan-gate-final.json", state.planGate);
   }
 
   state.workers = [];
   state.workerGates = [];
   state.checkpoints = [];
-  for (const unit of state.architecture.implementationUnits) {
+  for (const [unitIndex, unit] of state.architecture.implementationUnits.entries()) {
     const safeUnitId = unit.id.replace(/[^a-zA-Z0-9_.-]/g, "_");
+    const otherUnits = state.architecture.implementationUnits
+      .filter((_, index) => index !== unitIndex)
+      .map((other, index) => ({
+        id: other.id,
+        objective: other.objective,
+        filesExpected: other.filesExpected,
+        relation: index < unitIndex ? "already-completed" : "deferred",
+      }));
+
     const basePrompt = implementerPrompt({
-      objective,
       projectContext,
       architectureSummary: state.architecture!.summary,
       architecturalDecisions: state.architecture!.architecturalDecisions,
-      unit,
+      currentUnit: unit,
+      otherUnits,
     });
     const worker = await runCheckpointedQwenWorker({
       role: "implementer",
@@ -455,7 +683,7 @@ export async function runFactory(
 
   state.verification = await runStage(
     { stage: "verify", actor: "tools" },
-    () => verify(cwd, config.verificationCommands),
+    () => verify(cwd, config.verificationCommands, runtimeStatusIgnores),
   );
   store.write("verification.json", state.verification);
 
@@ -508,7 +736,7 @@ export async function runFactory(
 
     verification = await runStage(
       { stage: "verify", label: `after deterministic repair ${state.repairPasses}`, actor: "tools" },
-      () => verify(cwd, config.verificationCommands),
+      () => verify(cwd, config.verificationCommands, runtimeStatusIgnores),
     );
     state.verification = verification;
     store.write(`verification-${state.repairPasses}.json`, verification);
@@ -607,7 +835,7 @@ export async function runFactory(
 
     verification = await runStage(
       { stage: "verify", label: `after repair ${state.repairPasses}`, actor: "tools" },
-      () => verify(cwd, config.verificationCommands),
+      () => verify(cwd, config.verificationCommands, runtimeStatusIgnores),
     );
     state.verification = verification;
     store.write(`verification-${state.repairPasses}.json`, verification);

@@ -56,6 +56,7 @@ export interface RunCheckpointableAgentOptions<T> extends RunAgentOptions<T> {
   contextBudget: ContextBudgetConfig;
   validateCheckpoint: (value: unknown) => WorkerCheckpoint;
   onContext?: (level: "warning" | "checkpoint", usage: ContextUsageSnapshot) => void;
+  maxRuntimeMs?: number;
 }
 
 function resourceDir(): string {
@@ -138,6 +139,7 @@ interface InternalRunOptions<T> extends RunAgentOptions<T> {
   contextBudget?: ContextBudgetConfig;
   validateCheckpoint?: (value: unknown) => WorkerCheckpoint;
   onContext?: (level: "warning" | "checkpoint", usage: ContextUsageSnapshot) => void;
+  maxRuntimeMs?: number;
 }
 
 async function runInternal<T>(options: InternalRunOptions<T>): Promise<{
@@ -274,8 +276,27 @@ async function runInternal<T>(options: InternalRunOptions<T>): Promise<{
   });
 
   let metrics: AgentRunMetrics | undefined;
+  let runtimeTimer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await session.prompt(options.prompt);
+    const promptPromise = session.prompt(options.prompt);
+    if (options.maxRuntimeMs && options.maxRuntimeMs > 0) {
+      await Promise.race([
+        promptPromise,
+        new Promise<void>((_, reject) => {
+          runtimeTimer = setTimeout(() => {
+            void session.abort().catch(() => undefined);
+            reject(
+              new Error(
+                `${options.role} exceeded max runtime of ${Math.round(options.maxRuntimeMs! / 60_000)} minute(s)`,
+              ),
+            );
+          }, options.maxRuntimeMs);
+        }),
+      ]);
+    } else {
+      await promptPromise;
+    }
+
     inspectContext();
     const stats = session.getSessionStats();
     metrics = {
@@ -295,6 +316,7 @@ async function runInternal<T>(options: InternalRunOptions<T>): Promise<{
       checkpointRequested,
     };
   } finally {
+    if (runtimeTimer) clearTimeout(runtimeTimer);
     unsubscribe();
     session.dispose();
   }

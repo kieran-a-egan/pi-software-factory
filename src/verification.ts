@@ -21,25 +21,47 @@ async function run(command: string, cwd: string): Promise<{ passed: boolean; exi
   }
 }
 
-export async function gitStatus(cwd: string): Promise<string> {
-  return (await run("git status --short", cwd)).output;
+function normalizePath(value: string): string {
+  return value.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/$/, "");
 }
 
-export async function verify(cwd: string, commands: string[]): Promise<VerificationResult> {
+function filterStatus(output: string, ignoredPrefixes: string[]): string {
+  const prefixes = ignoredPrefixes.map(normalizePath).filter(Boolean);
+  if (prefixes.length === 0 || !output.trim()) return output.trim();
+
+  return output
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .filter((line) => {
+      const path = normalizePath(line.length > 3 ? line.slice(3).trim().replace(/^"|"$/g, "") : line.trim());
+      return !prefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+    })
+    .join("\n");
+}
+
+export async function gitStatus(cwd: string, ignoredPrefixes: string[] = []): Promise<string> {
+  return filterStatus((await run("git status --short --untracked-files=all", cwd)).output, ignoredPrefixes);
+}
+
+export async function verify(
+  cwd: string,
+  commands: string[],
+  ignoredStatusPrefixes: string[] = [],
+): Promise<VerificationResult> {
   const checks: VerificationResult["checks"] = [];
   for (const command of ["git diff --check", ...commands]) {
     const result = await run(command, cwd);
     checks.push({ command, ...result });
   }
 
-  const status = await run("git status --short", cwd);
+  const status = await run("git status --short --untracked-files=all", cwd);
   const stat = await run("git diff --stat", cwd);
   const diff = await run("git diff --no-ext-diff", cwd);
 
   return {
     passed: checks.every((x) => x.passed),
     checks,
-    gitStatus: status.output,
+    gitStatus: filterStatus(status.output, ignoredStatusPrefixes),
     diffStat: stat.output,
     diff: diff.output,
   };
