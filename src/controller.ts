@@ -166,10 +166,10 @@ function unexpectedReportedFiles(assignment: unknown, report: WorkerReport): str
   if (!Array.isArray(filesExpected) || filesExpected.length === 0) return [];
 
   const normalize = (value: string) => value.replace(/\\/g, "/").replace(/^\.\//, "");
-  const allowed = new Set(filesExpected.map((value: unknown) => normalize(String(value))));
+  const allowed = filesExpected.map((value: unknown) => normalize(String(value)));
   return report.changedFiles
     .map(normalize)
-    .filter((path) => !allowed.has(path));
+    .filter((path) => !allowed.some((expected: string) => pathsOverlap(path, expected)));
 }
 
 
@@ -227,7 +227,7 @@ function selectParallelUnits(
   const selected: ImplementationUnit[] = [];
 
   for (const unit of ready) {
-    if (!unit.filesExpected?.length) continue;
+    if (!unit.filesExpected?.length || !Array.isArray(unit.dependsOn)) continue;
 
     const overlaps = selected.some((other) =>
       unit.filesExpected!.some((path) =>
