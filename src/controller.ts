@@ -887,6 +887,20 @@ export async function runFactory(
 
   const runSequentialImplementationUnit = async (unit: ImplementationUnit): Promise<boolean> => {
     const safeUnitId = unit.id.replace(/[^a-zA-Z0-9_.-]/g, "_");
+    let beforeSnapshot: string | undefined;
+
+    if (unit.filesExpected?.length) {
+      try {
+        beforeSnapshot = await createWorkingTreeSnapshot(cwd, runtimeStatusIgnores);
+      } catch (error: any) {
+        state.finalStatus = "human";
+        state.finalReason =
+          `Could not create a deterministic scope snapshot for implementation unit ${unit.id}: ${error?.message ?? String(error)}`;
+        setPhase("human");
+        return false;
+      }
+    }
+
     const worker = await runBoundedWorkerAssignment({
       phase: "implementation",
       role: "implementer",
@@ -899,7 +913,49 @@ export async function runFactory(
       basePrompt: buildImplementationPrompt(unit, "primary-sequential"),
       collectImplementationReport: true,
     });
-    return worker !== null;
+    if (!worker) return false;
+
+    if (beforeSnapshot && unit.filesExpected?.length) {
+      const change = await captureWorktreeChange(
+        cwd,
+        beforeSnapshot,
+        runtimeStatusIgnores,
+      );
+      const unexpectedPaths = changedPathsOutsideExpected(
+        change.changedPaths,
+        unit.filesExpected,
+      );
+      const reported = worker.changedFiles.map((path) => path.replace(/\\/g, "/"));
+      const actualUnreported = change.changedPaths.filter(
+        (path) => !reported.some((reportedPath) => pathsOverlap(path, reportedPath)),
+      );
+      const scopeEvidence = {
+        unitId: unit.id,
+        filesExpected: unit.filesExpected,
+        reportedChangedFiles: worker.changedFiles,
+        actualChangedPaths: change.changedPaths,
+        actualUnreported,
+        unexpectedPaths,
+        beforeSnapshot,
+        afterSnapshot: change.snapshotCommit,
+        at: new Date().toISOString(),
+      };
+      store.write(`implementation-scope-${safeUnitId}.json`, scopeEvidence);
+
+      if (unexpectedPaths.length > 0) {
+        recordDecision({
+          stage: "worker-scope-actual",
+          ...scopeEvidence,
+        });
+        state.finalStatus = "human";
+        state.finalReason =
+          `Implementation unit ${unit.id} changed files outside its deterministic scope: ${unexpectedPaths.join(", ")}.`;
+        setPhase("human");
+        return false;
+      }
+    }
+
+    return true;
   };
 
   while (pendingUnits.size > 0) {
