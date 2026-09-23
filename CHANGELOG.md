@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0
+
+- add bounded Jev-driven worker continuation for implementation and repair assignments
+- start each continuation in a fresh Qwen session using the prior factual report plus Jev routing evidence
+- keep Jev `continue` distinct from context-budget checkpoint/resume semantics
+- add configurable `maxWorkerContinuationPasses` with human escalation when the bound is exhausted
+- persist continuation reports, gates, continuation records, decisions, and summary counts
+- preserve hard implementation-unit file scope across continuation passes
+- show worker-continuation counts in final and `/factory-status` transcript output
+- correct deferred/already-completed unit relation metadata passed to implementation workers
+- fix the README legacy runtime-path migration wording
+
 ## 0.4.0
 
 - add bounded Jev-driven plan-gate `rescout` and `replan` loops before implementation

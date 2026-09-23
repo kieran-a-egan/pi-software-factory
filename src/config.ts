@@ -35,6 +35,7 @@ export const DEFAULT_CONFIG: FactoryConfig = {
   requireCleanWorkingTree: true,
   verificationCommands: [],
   maxRepairPasses: 1,
+  maxWorkerContinuationPasses: 2,
   workerMaxRuntimeMinutes: 20,
   maxDiffCharsForReview: 120_000,
 };
@@ -88,6 +89,10 @@ export function loadConfig(cwd: string): FactoryConfig {
   }
   if (!Number.isSafeInteger(planning.maxReplanPasses) || planning.maxReplanPasses < 0) {
     throw new Error("Invalid planningLoops.maxReplanPasses: expected a non-negative integer.");
+  }
+
+  if (!Number.isSafeInteger(config.maxWorkerContinuationPasses) || config.maxWorkerContinuationPasses < 0) {
+    throw new Error("Invalid maxWorkerContinuationPasses: expected a non-negative integer.");
   }
 
   if (!Number.isFinite(config.workerMaxRuntimeMinutes) || config.workerMaxRuntimeMinutes <= 0) {

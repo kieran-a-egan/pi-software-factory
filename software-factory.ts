@@ -4,7 +4,7 @@ import { loadConfig } from "./src/config.js";
 import { runFactory } from "./src/controller.js";
 import type { ContextUsageSnapshot, FactoryProgressEvent, FactoryRunState, StageTelemetry, TokenUsageSnapshot } from "./src/types.js";
 
-const VERSION = "0.4.0";
+const VERSION = "0.5.0";
 const ENTRY_TYPE = "software-factory";
 
 type TranscriptEntry =
@@ -183,6 +183,9 @@ function renderTranscriptEntry(data: TranscriptEntry, expanded: boolean, theme: 
     if ((data.state.checkpoints?.length ?? 0) > 0) {
       lines.push(`${theme.fg("muted", "Context checkpoints:")} ${data.state.checkpoints!.length}`);
     }
+    if ((data.state.workerContinuations?.length ?? 0) > 0) {
+      lines.push(`${theme.fg("muted", "Worker continuations:")} ${data.state.workerContinuations!.length}`);
+    }
     if (expanded && stages.length > 0) {
       lines.push("", theme.fg("dim", stages.map(stageSummary).join("\n")));
     }
@@ -202,6 +205,9 @@ function renderTranscriptEntry(data: TranscriptEntry, expanded: boolean, theme: 
       lines.push(`${theme.fg("muted", "Final:")} ${colorForFinalStatus(data.state.finalStatus, theme, finalStatus)}`);
     }
     if (data.state.finalReason) lines.push(`${theme.fg("muted", "Reason:")} ${data.state.finalReason}`);
+    if ((data.state.workerContinuations?.length ?? 0) > 0) {
+      lines.push(`${theme.fg("muted", "Worker continuations:")} ${data.state.workerContinuations!.length}`);
+    }
   } else if (data.runningStage) {
     lines.push(`${theme.fg("muted", "Current:")} ${data.runningStage}`);
   }
