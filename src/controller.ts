@@ -26,11 +26,21 @@ import {
   replanPrompt,
   workerContinuationPrompt,
 } from "./prompts.js";
+import {
+  applyWorktreePatch,
+  captureWorktreeChange,
+  changedPathsOutsideExpected,
+  createIsolatedWorktree,
+  createWorkingTreeSnapshot,
+  pathsOverlap,
+  removeIsolatedWorktree,
+} from "./parallel.js";
 import { createRunStore } from "./storage.js";
 import type {
   FactoryConfig,
   FactoryProgressEvent,
   FactoryRunState,
+  ImplementationUnit,
   ReviewResult,
   ScoutResult,
   StageTelemetry,
@@ -115,6 +125,7 @@ function buildRunSummary(state: FactoryRunState) {
     planGatePasses: state.planGatePasses,
     checkpointCount: state.checkpoints?.length ?? 0,
     workerContinuationCount: state.workerContinuations?.length ?? 0,
+    parallelBatchCount: state.parallelBatches?.length ?? 0,
     stageCount: telemetry.length,
     totalStageDurationMs: telemetry.reduce((sum, stage) => sum + stage.durationMs, 0),
     tokens,
@@ -161,6 +172,77 @@ function unexpectedReportedFiles(assignment: unknown, report: WorkerReport): str
     .filter((path) => !allowed.has(path));
 }
 
+
+function implementationGraphIssue(units: ImplementationUnit[]): string | undefined {
+  const ids = new Set<string>();
+  for (const unit of units) {
+    if (ids.has(unit.id)) return `duplicate implementation unit id: ${unit.id}`;
+    ids.add(unit.id);
+  }
+
+  for (const unit of units) {
+    for (const dependency of unit.dependsOn ?? []) {
+      if (!ids.has(dependency)) {
+        return `implementation unit ${unit.id} depends on unknown unit ${dependency}`;
+      }
+    }
+  }
+
+  const remaining = new Set(units.map((unit) => unit.id));
+  const resolved = new Set<string>();
+  while (remaining.size > 0) {
+    const ready = units.filter(
+      (unit) =>
+        remaining.has(unit.id) &&
+        (unit.dependsOn ?? []).every((dependency) => resolved.has(dependency)),
+    );
+    if (ready.length === 0) {
+      return `implementation dependency graph contains a cycle involving: ${[...remaining].join(", ")}`;
+    }
+    for (const unit of ready) {
+      remaining.delete(unit.id);
+      resolved.add(unit.id);
+    }
+  }
+
+  return undefined;
+}
+
+function readyImplementationUnits(
+  units: ImplementationUnit[],
+  pending: Set<string>,
+  completed: Set<string>,
+): ImplementationUnit[] {
+  return units.filter(
+    (unit) =>
+      pending.has(unit.id) &&
+      (unit.dependsOn ?? []).every((dependency) => completed.has(dependency)),
+  );
+}
+
+function selectParallelUnits(
+  ready: ImplementationUnit[],
+  maxParallelUnits: number,
+): ImplementationUnit[] {
+  const selected: ImplementationUnit[] = [];
+
+  for (const unit of ready) {
+    if (!unit.filesExpected?.length) continue;
+
+    const overlaps = selected.some((other) =>
+      unit.filesExpected!.some((path) =>
+        other.filesExpected!.some((otherPath) => pathsOverlap(path, otherPath)),
+      ),
+    );
+    if (overlaps) continue;
+
+    selected.push(unit);
+    if (selected.length >= maxParallelUnits) break;
+  }
+
+  return selected;
+}
+
 export async function runFactory(
   cwd: string,
   objective: string,
@@ -182,6 +264,7 @@ export async function runFactory(
     replanPasses: 0,
     planGatePasses: 0,
     workerContinuations: [],
+    parallelBatches: [],
     telemetry: [],
   };
 
