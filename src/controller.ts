@@ -801,26 +801,19 @@ export async function runFactory(
       review: null,
       deterministicFailures,
     });
-    const repair = await runCheckpointedQwenWorker({
+    const repair = await runBoundedWorkerAssignment({
+      phase: "repair",
       role: "repairer",
       stage: "qwen-repair",
-      label: `deterministic pass ${state.repairPasses}`,
-      artifactStem: `repair-${state.repairPasses}`,
-      systemPrompt: REPAIRER_SYSTEM,
-      basePrompt: repairBasePrompt,
-    });
-    if (!repair) return finish();
-    store.write(`repair-${state.repairPasses}.json`, repair);
-
-    const repairGate = await gateWorkerReport({
-      phase: "repair",
       label: `deterministic repair ${state.repairPasses}`,
       assignment: repairAssignment,
-      report: repair,
+      artifactStem: `repair-${state.repairPasses}`,
+      gateArtifactStem: `repair-gate-${state.repairPasses}`,
+      systemPrompt: REPAIRER_SYSTEM,
+      basePrompt: repairBasePrompt,
       deterministicFailures,
-      artifactName: `repair-gate-${state.repairPasses}.json`,
     });
-    if (!repairGate) return finish();
+    if (!repair) return finish();
 
     verification = await runStage(
       { stage: "verify", label: `after deterministic repair ${state.repairPasses}`, actor: "tools" },
@@ -900,26 +893,19 @@ export async function runFactory(
       review,
       deterministicFailures,
     });
-    const repair = await runCheckpointedQwenWorker({
+    const repair = await runBoundedWorkerAssignment({
+      phase: "repair",
       role: "repairer",
       stage: "qwen-repair",
-      label: `review pass ${state.repairPasses}`,
-      artifactStem: `repair-${state.repairPasses}`,
-      systemPrompt: REPAIRER_SYSTEM,
-      basePrompt: repairBasePrompt,
-    });
-    if (!repair) return finish();
-    store.write(`repair-${state.repairPasses}.json`, repair);
-
-    const repairGate = await gateWorkerReport({
-      phase: "repair",
       label: `review repair ${state.repairPasses}`,
       assignment: repairAssignment,
-      report: repair,
+      artifactStem: `repair-${state.repairPasses}`,
+      gateArtifactStem: `repair-gate-${state.repairPasses}`,
+      systemPrompt: REPAIRER_SYSTEM,
+      basePrompt: repairBasePrompt,
       deterministicFailures,
-      artifactName: `repair-gate-${state.repairPasses}.json`,
     });
-    if (!repairGate) return finish();
+    if (!repair) return finish();
 
     verification = await runStage(
       { stage: "verify", label: `after repair ${state.repairPasses}`, actor: "tools" },
