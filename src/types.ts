@@ -33,6 +33,11 @@ export interface PlanningLoopConfig {
   maxReplanPasses: number;
 }
 
+export interface ParallelImplementationConfig {
+  enabled: boolean;
+  maxParallelUnits: number;
+}
+
 export interface WorkerCheckpoint {
   unitId: string;
   summary: string;
@@ -62,6 +67,13 @@ export interface WorkerContinuationRecord {
   createdAt: string;
   priorDisposition: "continue";
   priorConfidence: number;
+}
+
+export interface ParallelBatchRecord {
+  index: number;
+  unitIds: string[];
+  createdAt: string;
+  snapshotCommit: string;
 }
 
 export interface StageTelemetry {
@@ -111,6 +123,7 @@ export interface FactoryConfig {
   };
   contextBudget: ContextBudgetConfig;
   planningLoops: PlanningLoopConfig;
+  parallelImplementation: ParallelImplementationConfig;
   runRoot: string;
   contextPaths: string[];
   contextMaxBytes: number;
@@ -244,6 +257,7 @@ export interface FactoryRunState {
   workerGates?: WorkerGateDecision[];
   checkpoints?: ContextCheckpointRecord[];
   workerContinuations?: WorkerContinuationRecord[];
+  parallelBatches?: ParallelBatchRecord[];
   verification?: VerificationResult;
   review?: ReviewResult;
   reviewGate?: ReviewGateDecision;
