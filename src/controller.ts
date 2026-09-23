@@ -359,6 +359,8 @@ export async function runFactory(
     artifactStem: string;
     systemPrompt: string;
     basePrompt: string;
+    workerCwd?: string;
+    abortSignal?: AbortSignal;
   }): Promise<WorkerReport | null> => {
     let prompt = input.basePrompt;
     let checkpointCount = 0;
@@ -379,7 +381,7 @@ export async function runFactory(
           },
           () => runCheckpointableAgent({
             role: input.role,
-            cwd,
+            cwd: input.workerCwd ?? cwd,
             model: config.qwen,
             systemPrompt: input.systemPrompt,
             prompt,
@@ -389,6 +391,7 @@ export async function runFactory(
             contextBudget: config.contextBudget,
             validateCheckpoint: validateWorkerCheckpoint,
             maxRuntimeMs: config.workerMaxRuntimeMinutes * 60_000,
+            abortSignal: input.abortSignal,
             onContext: (level, usage) => {
               progress({
                 type: "context",
@@ -526,6 +529,8 @@ export async function runFactory(
     basePrompt: string;
     deterministicFailures?: Array<{ command: string; output: string }>;
     collectImplementationReport?: boolean;
+    workerCwd?: string;
+    abortSignal?: AbortSignal;
   }): Promise<WorkerReport | null> => {
     let continuationPass = 0;
     let prompt = input.basePrompt;
@@ -543,6 +548,8 @@ export async function runFactory(
         artifactStem: `${input.artifactStem}${suffix}`,
         systemPrompt: input.systemPrompt,
         basePrompt: prompt,
+        workerCwd: input.workerCwd,
+        abortSignal: input.abortSignal,
       });
       if (!worker) return null;
 
