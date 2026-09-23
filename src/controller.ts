@@ -824,26 +824,60 @@ export async function runFactory(
   state.workerGates = [];
   state.checkpoints = [];
   state.workerContinuations = [];
-  for (const [unitIndex, unit] of state.architecture.implementationUnits.entries()) {
-    const safeUnitId = unit.id.replace(/[^a-zA-Z0-9_.-]/g, "_");
-    const otherUnits = state.architecture.implementationUnits
-      .map((other, index) => ({ other, index }))
-      .filter(({ index }) => index !== unitIndex)
-      .map(({ other, index }) => ({
+  state.parallelBatches = [];
+
+  const implementationUnits = state.architecture.implementationUnits;
+  const graphIssue = implementationGraphIssue(implementationUnits);
+  store.write("implementation-graph.json", {
+    parallelImplementation: config.parallelImplementation,
+    units: implementationUnits.map((unit) => ({
+      id: unit.id,
+      dependsOn: unit.dependsOn ?? [],
+      filesExpected: unit.filesExpected ?? [],
+    })),
+    issue: graphIssue ?? null,
+  });
+  if (graphIssue) {
+    return stop("human", `Invalid implementation dependency graph: ${graphIssue}.`);
+  }
+
+  const pendingUnits = new Set(implementationUnits.map((unit) => unit.id));
+  const completedUnits = new Set<string>();
+  let parallelBatchIndex = 0;
+  let parallelAvailable =
+    config.parallelImplementation.enabled &&
+    config.parallelImplementation.maxParallelUnits > 1;
+
+  const buildImplementationPrompt = (
+    unit: ImplementationUnit,
+    executionMode: "primary-sequential" | "isolated-parallel-worktree",
+    parallelPeerIds: Set<string> = new Set(),
+  ) => {
+    const otherUnits = implementationUnits
+      .filter((other) => other.id !== unit.id)
+      .map((other) => ({
         id: other.id,
         objective: other.objective,
         filesExpected: other.filesExpected,
-        relation: index < unitIndex ? "already-completed" : "deferred",
+        relation: completedUnits.has(other.id)
+          ? "already-completed"
+          : parallelPeerIds.has(other.id)
+            ? "parallel-peer"
+            : "deferred",
       }));
 
-    const basePrompt = implementerPrompt({
+    return implementerPrompt({
+      executionMode,
       projectContext,
       architectureSummary: state.architecture!.summary,
       architecturalDecisions: state.architecture!.architecturalDecisions,
       currentUnit: unit,
       otherUnits,
     });
+  };
 
+  const runSequentialImplementationUnit = async (unit: ImplementationUnit): Promise<boolean> => {
+    const safeUnitId = unit.id.replace(/[^a-zA-Z0-9_.-]/g, "_");
     const worker = await runBoundedWorkerAssignment({
       phase: "implementation",
       role: "implementer",
@@ -853,10 +887,236 @@ export async function runFactory(
       artifactStem: `implementation-${safeUnitId}`,
       gateArtifactStem: `implementation-gate-${safeUnitId}`,
       systemPrompt: IMPLEMENTER_SYSTEM,
-      basePrompt,
+      basePrompt: buildImplementationPrompt(unit, "primary-sequential"),
       collectImplementationReport: true,
     });
-    if (!worker) return finish();
+    return worker !== null;
+  };
+
+  while (pendingUnits.size > 0) {
+    const ready = readyImplementationUnits(implementationUnits, pendingUnits, completedUnits);
+    if (ready.length === 0) {
+      return stop(
+        "human",
+        `No implementation unit is runnable; unresolved units: ${[...pendingUnits].join(", ")}.`,
+      );
+    }
+
+    const parallelUnits = parallelAvailable
+      ? selectParallelUnits(ready, config.parallelImplementation.maxParallelUnits)
+      : [];
+
+    if (parallelUnits.length < 2) {
+      const unit = ready[0];
+      if (!(await runSequentialImplementationUnit(unit))) return finish();
+      pendingUnits.delete(unit.id);
+      completedUnits.add(unit.id);
+      continue;
+    }
+
+    parallelBatchIndex += 1;
+    const batchLabel = `batch ${parallelBatchIndex}`;
+    let snapshotCommit: string;
+
+    try {
+      snapshotCommit = await runStage(
+        { stage: "parallel-snapshot", label: batchLabel, actor: "controller" },
+        () => createWorkingTreeSnapshot(cwd, runtimeStatusIgnores),
+      );
+    } catch (error: any) {
+      parallelAvailable = false;
+      store.write(`parallel-batch-${parallelBatchIndex}-fallback.json`, {
+        batch: parallelBatchIndex,
+        unitIds: parallelUnits.map((unit) => unit.id),
+        reason: error?.message ?? String(error),
+        action: "fall-back-to-sequential",
+      });
+      continue;
+    }
+
+    const batchRecord = {
+      index: parallelBatchIndex,
+      unitIds: parallelUnits.map((unit) => unit.id),
+      createdAt: new Date().toISOString(),
+      snapshotCommit,
+    };
+    state.parallelBatches.push(batchRecord);
+    store.writeState(state);
+
+    const peerIds = new Set(parallelUnits.map((unit) => unit.id));
+    const abortControllers = parallelUnits.map(() => new AbortController());
+
+    const abortPeers = (sourceIndex: number) => {
+      abortControllers.forEach((controller, index) => {
+        if (index !== sourceIndex && !controller.signal.aborted) controller.abort();
+      });
+    };
+
+    const parallelResults = await Promise.all(
+      parallelUnits.map(async (unit, index) => {
+        const safeUnitId = unit.id.replace(/[^a-zA-Z0-9_.-]/g, "_");
+        let worktree: Awaited<ReturnType<typeof createIsolatedWorktree>> | undefined;
+
+        try {
+          worktree = await createIsolatedWorktree(cwd, snapshotCommit, unit.id);
+          const worker = await runBoundedWorkerAssignment({
+            phase: "implementation",
+            role: "implementer",
+            stage: "qwen-implement",
+            label: `implementation unit ${unit.id} · parallel batch ${parallelBatchIndex}`,
+            assignment: unit,
+            artifactStem: `implementation-${safeUnitId}`,
+            gateArtifactStem: `implementation-gate-${safeUnitId}`,
+            systemPrompt: IMPLEMENTER_SYSTEM,
+            basePrompt: buildImplementationPrompt(
+              unit,
+              "isolated-parallel-worktree",
+              peerIds,
+            ),
+            collectImplementationReport: true,
+            workerCwd: worktree.dir,
+            abortSignal: abortControllers[index].signal,
+          });
+
+          if (!worker) {
+            abortPeers(index);
+            return {
+              ok: false as const,
+              unitId: unit.id,
+              error: state.finalReason ?? "worker stopped without a ready report",
+            };
+          }
+
+          const change = await captureWorktreeChange(worktree.dir, snapshotCommit);
+          const unexpectedPaths = changedPathsOutsideExpected(
+            change.changedPaths,
+            unit.filesExpected,
+          );
+
+          if (unexpectedPaths.length > 0) {
+            const violation = {
+              batch: parallelBatchIndex,
+              unitId: unit.id,
+              filesExpected: unit.filesExpected ?? [],
+              changedPaths: change.changedPaths,
+              unexpectedPaths,
+              at: new Date().toISOString(),
+            };
+            store.write(`parallel-scope-violation-${safeUnitId}.json`, violation);
+            store.appendDecision({ stage: "parallel-worker-scope", ...violation });
+            state.finalStatus = "human";
+            state.finalReason =
+              `Parallel worker ${unit.id} changed files outside its isolated file scope: ${unexpectedPaths.join(", ")}.`;
+            setPhase("human");
+            abortPeers(index);
+            return { ok: false as const, unitId: unit.id, error: state.finalReason };
+          }
+
+          return {
+            ok: true as const,
+            unit,
+            worker,
+            change,
+          };
+        } catch (error: any) {
+          abortPeers(index);
+          if (!abortControllers[index].signal.aborted && !state.finalStatus) {
+            state.finalStatus = "human";
+            state.finalReason =
+              `Parallel implementation worker ${unit.id} failed: ${error?.message ?? String(error)}`;
+            setPhase("human");
+          }
+          return {
+            ok: false as const,
+            unitId: unit.id,
+            error: error?.message ?? String(error),
+            cancelled: abortControllers[index].signal.aborted,
+          };
+        } finally {
+          if (worktree) await removeIsolatedWorktree(cwd, worktree);
+        }
+      }),
+    );
+
+    const failures = parallelResults.filter((result) => !result.ok);
+    if (failures.length > 0) {
+      if (!state.finalStatus) {
+        state.finalStatus = "human";
+        state.finalReason =
+          `Parallel implementation batch ${parallelBatchIndex} did not complete safely.`;
+      }
+      setPhase("human");
+      store.write(`parallel-batch-${parallelBatchIndex}.json`, {
+        ...batchRecord,
+        outcome: "stopped",
+        results: parallelResults,
+      });
+      return finish();
+    }
+
+    const successful = parallelResults.filter(
+      (result): result is Extract<(typeof parallelResults)[number], { ok: true }> => result.ok,
+    );
+
+    for (let leftIndex = 0; leftIndex < successful.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < successful.length; rightIndex += 1) {
+        const left = successful[leftIndex];
+        const right = successful[rightIndex];
+        const overlap = left.change.changedPaths.find((leftPath) =>
+          right.change.changedPaths.some((rightPath) => pathsOverlap(leftPath, rightPath)),
+        );
+        if (overlap) {
+          store.write(`parallel-batch-${parallelBatchIndex}.json`, {
+            ...batchRecord,
+            outcome: "scope-conflict",
+            leftUnit: left.unit.id,
+            rightUnit: right.unit.id,
+            overlappingPath: overlap,
+          });
+          return stop(
+            "human",
+            `Parallel workers ${left.unit.id} and ${right.unit.id} produced overlapping changes at ${overlap}.`,
+          );
+        }
+      }
+    }
+
+    const combinedPatch = successful
+      .map((result) => result.change.patch)
+      .filter((patch) => patch.trim())
+      .join("\n");
+
+    try {
+      await runStage(
+        { stage: "parallel-integrate", label: batchLabel, actor: "controller" },
+        () => applyWorktreePatch(cwd, combinedPatch),
+      );
+    } catch (error: any) {
+      store.write(`parallel-batch-${parallelBatchIndex}.json`, {
+        ...batchRecord,
+        outcome: "integration-failed",
+        error: error?.message ?? String(error),
+      });
+      return stop(
+        "human",
+        `Parallel batch ${parallelBatchIndex} could not be integrated cleanly: ${error?.message ?? String(error)}`,
+      );
+    }
+
+    store.write(`parallel-batch-${parallelBatchIndex}.json`, {
+      ...batchRecord,
+      outcome: "integrated",
+      units: successful.map((result) => ({
+        id: result.unit.id,
+        changedPaths: result.change.changedPaths,
+        snapshotCommit: result.change.snapshotCommit,
+      })),
+    });
+
+    for (const unit of parallelUnits) {
+      pendingUnits.delete(unit.id);
+      completedUnits.add(unit.id);
+    }
   }
 
   state.verification = await runStage(
