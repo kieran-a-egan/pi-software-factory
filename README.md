@@ -7,7 +7,7 @@ A Pi package that runs a controlled software-engineering pipeline using:
 - **local Qwen3.8-27B** for repository scouting, implementation, and repair
 - **deterministic tools** for Git/build/test/typecheck/lint truth
 
-Current version: **0.4.0**
+Current version: **0.5.0**
 
 ## Pipeline
 
@@ -49,6 +49,14 @@ Current version: **0.4.0**
 
 The controller owns the state machine. Models do not arbitrarily select the next agent.
 
+## v0.5 changes
+
+v0.5 adds bounded autonomous continuation after a Qwen worker submits evidence and Jev classifies that bounded assignment as `continue`.
+
+A continuation is not a context checkpoint. Context checkpoints resume the same in-progress worker because its live context is under pressure. A Jev continuation starts only after a complete worker report has been submitted and semantically classified as having concrete work remaining inside the same assignment. Continuations always use a fresh Qwen session, preserve the same unit/file scope, and are capped by `maxWorkerContinuationPasses` (default: 2). Exhaustion, low-confidence routing, `blocked`, or `invalid` still routes to human intervention.
+
+Continuation artifacts are persisted alongside the existing worker/gate history, and final/status transcript entries include the total continuation count.
+
 ## v0.4 changes
 
 v0.4 keeps the v0.3 Qwen context-checkpoint mechanism and adds bounded planning recovery.
@@ -63,7 +71,7 @@ Runtime artifacts are ordinary JSON/JSONL and now live under:
 .pi/software-factory/runs/SF-<timestamp>/
 ```
 
-They no longer live under `.okf`. The optional `.okf/project` context path remains available only for genuine OKF project context. If an existing config still contains the exact legacy default `"runRoot": ".pi/software-factory/runs"`, v0.4 transparently maps it to the new runtime location without moving or deleting historical runs.
+They no longer live under `.okf`. The optional `.okf/project` context path remains available only for genuine OKF project context. If an existing config still contains the exact legacy default `"runRoot": ".okf/work"`, v0.4+ transparently maps it to the new runtime location without moving or deleting historical runs.
 
 Worker stages also have a wall-clock watchdog. `workerMaxRuntimeMinutes` defaults to 20; if an implementation or repair session exceeds it, Pi aborts that subagent and the factory routes to `HUMAN` rather than running indefinitely. Implementation units are also treated as hard worker scope: when `filesExpected` is present, reported edits outside that set stop the run for review.
 
@@ -114,7 +122,7 @@ npm install
 git init
 git branch -M main
 git add -A
-git commit -m "Software Factory v0.4.0"
+git commit -m "Software Factory v0.5.0"
 
 pi install (Get-Location).Path
 ```
@@ -160,14 +168,14 @@ The package manifest points directly to `software-factory.ts`, so the extension 
 Once the repository has a remote, tag releases and install the Git source instead of the local path:
 
 ```powershell
-git tag v0.4.0
+git tag v0.5.0
 git push origin main --tags
 ```
 
 Then, for example:
 
 ```text
-pi install git:github.com/<owner>/pi-software-factory@v0.4.0
+pi install git:github.com/<owner>/pi-software-factory@v0.5.0
 ```
 
 Pi can update unpinned Git package sources with its package update commands; pinned refs remain fixed until explicitly changed.
@@ -251,6 +259,7 @@ Typical configuration:
     "npm run typecheck"
   ],
   "maxRepairPasses": 1,
+  "maxWorkerContinuationPasses": 2,
   "workerMaxRuntimeMinutes": 20,
   "maxDiffCharsForReview": 120000
 }
@@ -349,7 +358,7 @@ pi-software-factory/
 
 ## Transcript UI
 
-v0.3 continues the v0.2.2 transcript design and does not use Pi's dock widget. Factory progress is written as custom transcript entries, so it scrolls naturally with the conversation and is not clipped by terminal height. These entries are TUI/session state only and do not enter the LLM context. The currently executing stage is shown in Pi's one-line status bar.
+v0.5 continues the v0.2.2 transcript design and does not use Pi's dock widget. Factory progress is written as custom transcript entries, so it scrolls naturally with the conversation and is not clipped by terminal height. These entries are TUI/session state only and do not enter the LLM context. The currently executing stage is shown in Pi's one-line status bar.
 
 `/factory-status` appends the complete most-recent run summary and stage list to the transcript. Completed run state is also recovered from persisted session entries after an extension reload.
 
