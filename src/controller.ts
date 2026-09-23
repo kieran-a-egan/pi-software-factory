@@ -17,13 +17,14 @@ import {
   REVIEWER_SYSTEM,
   SCOUT_SYSTEM,
   architectPrompt,
-  continuationPrompt,
+  checkpointContinuationPrompt,
   implementerPrompt,
   repairPrompt,
   reviewerPrompt,
   scoutPrompt,
   rescoutPrompt,
   replanPrompt,
+  workerContinuationPrompt,
 } from "./prompts.js";
 import { createRunStore } from "./storage.js";
 import type {
@@ -113,6 +114,7 @@ function buildRunSummary(state: FactoryRunState) {
     replanPasses: state.replanPasses,
     planGatePasses: state.planGatePasses,
     checkpointCount: state.checkpoints?.length ?? 0,
+    workerContinuationCount: state.workerContinuations?.length ?? 0,
     stageCount: telemetry.length,
     totalStageDurationMs: telemetry.reduce((sum, stage) => sum + stage.durationMs, 0),
     tokens,
@@ -179,6 +181,7 @@ export async function runFactory(
     rescoutPasses: 0,
     replanPasses: 0,
     planGatePasses: 0,
+    workerContinuations: [],
     telemetry: [],
   };
 
@@ -363,7 +366,7 @@ export async function runFactory(
         return null;
       }
 
-      prompt = continuationPrompt(input.basePrompt, segment.checkpoint);
+      prompt = checkpointContinuationPrompt(input.basePrompt, segment.checkpoint);
     }
   };
 
@@ -425,14 +428,103 @@ export async function runFactory(
       return null;
     }
 
-    if (gate.disposition !== "ready") {
-      state.finalStatus = "human";
-      state.finalReason = `Jev classified ${input.label} as ${gate.disposition}. v0.4 stops rather than auto-continuing worker work.`;
-      setPhase("human");
-      return null;
-    }
-
     return gate;
+  };
+
+  const runBoundedWorkerAssignment = async (input: {
+    phase: "implementation" | "repair";
+    role: "implementer" | "repairer";
+    stage: "qwen-implement" | "qwen-repair";
+    label: string;
+    assignment: unknown;
+    artifactStem: string;
+    gateArtifactStem: string;
+    systemPrompt: string;
+    basePrompt: string;
+    deterministicFailures?: Array<{ command: string; output: string }>;
+    collectImplementationReport?: boolean;
+  }): Promise<WorkerReport | null> => {
+    let continuationPass = 0;
+    let prompt = input.basePrompt;
+
+    while (true) {
+      const suffix = continuationPass === 0 ? "" : `-continue-${continuationPass}`;
+      const workerLabel = continuationPass === 0
+        ? input.label
+        : `${input.label} · continue ${continuationPass}`;
+
+      const worker = await runCheckpointedQwenWorker({
+        role: input.role,
+        stage: input.stage,
+        label: workerLabel,
+        artifactStem: `${input.artifactStem}${suffix}`,
+        systemPrompt: input.systemPrompt,
+        basePrompt: prompt,
+      });
+      if (!worker) return null;
+
+      if (input.collectImplementationReport) state.workers!.push(worker);
+      store.write(`${input.artifactStem}${suffix}.json`, worker);
+
+      const gate = await gateWorkerReport({
+        phase: input.phase,
+        label: continuationPass === 0
+          ? input.label
+          : `${input.label} continuation ${continuationPass}`,
+        assignment: input.assignment,
+        report: worker,
+        deterministicFailures: input.deterministicFailures,
+        artifactName: `${input.gateArtifactStem}${suffix}.json`,
+      });
+      if (!gate) return null;
+
+      if (gate.disposition === "ready") return worker;
+
+      if (gate.disposition === "blocked" || gate.disposition === "invalid") {
+        state.finalStatus = "human";
+        state.finalReason = `Jev classified ${input.label} as ${gate.disposition}.`;
+        setPhase("human");
+        return null;
+      }
+
+      if (continuationPass >= config.maxWorkerContinuationPasses) {
+        state.finalStatus = "human";
+        state.finalReason =
+          `Jev requested another continuation for ${input.label} after reaching maxWorkerContinuationPasses (${config.maxWorkerContinuationPasses}).`;
+        setPhase("human");
+        return null;
+      }
+
+      continuationPass += 1;
+      const record = {
+        phase: input.phase,
+        label: input.label,
+        pass: continuationPass,
+        createdAt: new Date().toISOString(),
+        priorDisposition: "continue" as const,
+        priorConfidence: gate.confidence,
+      };
+      state.workerContinuations ??= [];
+      state.workerContinuations.push(record);
+      store.write(`continuation-${input.artifactStem}-${continuationPass}.json`, {
+        ...record,
+        previousReport: worker,
+        gate,
+      });
+      store.appendDecision({
+        stage: "worker-continuation",
+        ...record,
+        decision: gate,
+      });
+      store.writeState(state);
+
+      prompt = workerContinuationPrompt({
+        basePrompt: input.basePrompt,
+        previousReport: worker,
+        gate,
+        pass: continuationPass,
+      });
+    }
   };
 
   state.intake = await runStage(
@@ -641,11 +733,13 @@ export async function runFactory(
   state.workers = [];
   state.workerGates = [];
   state.checkpoints = [];
+  state.workerContinuations = [];
   for (const [unitIndex, unit] of state.architecture.implementationUnits.entries()) {
     const safeUnitId = unit.id.replace(/[^a-zA-Z0-9_.-]/g, "_");
     const otherUnits = state.architecture.implementationUnits
-      .filter((_, index) => index !== unitIndex)
-      .map((other, index) => ({
+      .map((other, index) => ({ other, index }))
+      .filter(({ index }) => index !== unitIndex)
+      .map(({ other, index }) => ({
         id: other.id,
         objective: other.objective,
         filesExpected: other.filesExpected,
@@ -659,26 +753,20 @@ export async function runFactory(
       currentUnit: unit,
       otherUnits,
     });
-    const worker = await runCheckpointedQwenWorker({
+
+    const worker = await runBoundedWorkerAssignment({
+      phase: "implementation",
       role: "implementer",
       stage: "qwen-implement",
-      label: unit.id,
-      artifactStem: `implementation-${safeUnitId}`,
-      systemPrompt: IMPLEMENTER_SYSTEM,
-      basePrompt,
-    });
-    if (!worker) return finish();
-    state.workers.push(worker);
-    store.write(`implementation-${safeUnitId}.json`, worker);
-
-    const gate = await gateWorkerReport({
-      phase: "implementation",
       label: `implementation unit ${unit.id}`,
       assignment: unit,
-      report: worker,
-      artifactName: `implementation-gate-${safeUnitId}.json`,
+      artifactStem: `implementation-${safeUnitId}`,
+      gateArtifactStem: `implementation-gate-${safeUnitId}`,
+      systemPrompt: IMPLEMENTER_SYSTEM,
+      basePrompt,
+      collectImplementationReport: true,
     });
-    if (!gate) return finish();
+    if (!worker) return finish();
   }
 
   state.verification = await runStage(
