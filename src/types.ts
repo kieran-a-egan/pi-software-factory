@@ -76,6 +76,13 @@ export interface ParallelBatchRecord {
   snapshotCommit: string;
 }
 
+export interface FactoryDecisionRecord {
+  stage: string;
+  at: string;
+  decision?: unknown;
+  [key: string]: unknown;
+}
+
 export interface StageTelemetry {
   stage: string;
   label?: string;
@@ -258,6 +265,7 @@ export interface FactoryRunState {
   checkpoints?: ContextCheckpointRecord[];
   workerContinuations?: WorkerContinuationRecord[];
   parallelBatches?: ParallelBatchRecord[];
+  decisions?: FactoryDecisionRecord[];
   verification?: VerificationResult;
   review?: ReviewResult;
   reviewGate?: ReviewGateDecision;
