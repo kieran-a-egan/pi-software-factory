@@ -113,7 +113,7 @@ export function repairPrompt(input: unknown): string {
 }
 
 
-export function continuationPrompt(basePrompt: string, checkpoint: unknown): string {
+export function checkpointContinuationPrompt(basePrompt: string, checkpoint: unknown): string {
   return `${basePrompt}
 
 --- FACTORY CONTINUATION ---
@@ -125,6 +125,28 @@ ${JSON.stringify(checkpoint, null, 2)}
 Resume from checkpoint.nextAction and remainingWork. Preserve prior decisions unless current repository evidence proves they are wrong. When the assignment is finished, call submit_result with the normal WorkerReport shape.`;
 }
 
+
+
+export function workerContinuationPrompt(input: {
+  basePrompt: string;
+  previousReport: unknown;
+  gate: unknown;
+  pass: number;
+}): string {
+  return `${input.basePrompt}
+
+--- JEV WORKER CONTINUATION ---
+This is a fresh Qwen worker session for continuation pass ${input.pass}. The prior worker submitted a structurally valid report, and Jev classified that bounded assignment as requiring additional work.
+The repository already contains every edit made by earlier worker sessions. Inspect current files and continue ONLY the same bounded assignment. Do not redo completed work, broaden scope, or perform work assigned to other implementation units.
+
+Previous worker report:
+${JSON.stringify(input.previousReport, null, 2)}
+
+Jev routing decision:
+${JSON.stringify(input.gate, null, 2)}
+
+Resolve the concrete remaining work inside the assignment. When finished, call submit_result with the normal WorkerReport shape. If the assignment is externally blocked, report the blocker rather than inventing a workaround.`;
+}
 
 export function rescoutPrompt(input: unknown): string {
   return `Perform a targeted repository rescout for this factory planning loop:\n${JSON.stringify(input, null, 2)}\n\nInvestigate the requested evidence focus, follow relevant symbols/tests/configuration, and return a supplemental evidence pack using the normal ScoutResult shape. The unknowns array must describe what remains unresolved after this pass, not simply repeat resolved prior unknowns.`;
