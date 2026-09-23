@@ -55,6 +55,15 @@ export interface ContextCheckpointRecord {
   checkpoint: WorkerCheckpoint;
 }
 
+export interface WorkerContinuationRecord {
+  phase: "implementation" | "repair";
+  label: string;
+  pass: number;
+  createdAt: string;
+  priorDisposition: "continue";
+  priorConfidence: number;
+}
+
 export interface StageTelemetry {
   stage: string;
   label?: string;
@@ -108,6 +117,7 @@ export interface FactoryConfig {
   requireCleanWorkingTree: boolean;
   verificationCommands: string[];
   maxRepairPasses: number;
+  maxWorkerContinuationPasses: number;
   workerMaxRuntimeMinutes: number;
   maxDiffCharsForReview: number;
 }
@@ -233,6 +243,7 @@ export interface FactoryRunState {
   workers?: WorkerReport[];
   workerGates?: WorkerGateDecision[];
   checkpoints?: ContextCheckpointRecord[];
+  workerContinuations?: WorkerContinuationRecord[];
   verification?: VerificationResult;
   review?: ReviewResult;
   reviewGate?: ReviewGateDecision;
