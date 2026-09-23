@@ -940,7 +940,7 @@ export async function runFactory(
       createdAt: new Date().toISOString(),
       snapshotCommit,
     };
-    state.parallelBatches.push(batchRecord);
+    (state.parallelBatches ??= []).push(batchRecord);
     store.writeState(state);
 
     const peerIds = new Set(parallelUnits.map((unit) => unit.id));
