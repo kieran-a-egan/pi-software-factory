@@ -30,6 +30,10 @@
     "maxRescoutPasses": 2,
     "maxReplanPasses": 2
   },
+  "parallelImplementation": {
+    "enabled": true,
+    "maxParallelUnits": 2
+  },
   "contextBudget": {
     "enabled": true,
     "warningTokens": 65000,
