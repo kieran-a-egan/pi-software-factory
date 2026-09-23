@@ -4,7 +4,7 @@ import { loadConfig } from "./src/config.js";
 import { runFactory } from "./src/controller.js";
 import type { ContextUsageSnapshot, FactoryProgressEvent, FactoryRunState, StageTelemetry, TokenUsageSnapshot } from "./src/types.js";
 
-const VERSION = "0.5.0";
+const VERSION = "0.6.0";
 const ENTRY_TYPE = "software-factory";
 
 type TranscriptEntry =
@@ -186,6 +186,9 @@ function renderTranscriptEntry(data: TranscriptEntry, expanded: boolean, theme: 
     if ((data.state.workerContinuations?.length ?? 0) > 0) {
       lines.push(`${theme.fg("muted", "Worker continuations:")} ${data.state.workerContinuations!.length}`);
     }
+    if ((data.state.parallelBatches?.length ?? 0) > 0) {
+      lines.push(`${theme.fg("muted", "Parallel batches:")} ${data.state.parallelBatches!.length}`);
+    }
     if (expanded && stages.length > 0) {
       lines.push("", theme.fg("dim", stages.map(stageSummary).join("\n")));
     }
@@ -207,6 +210,9 @@ function renderTranscriptEntry(data: TranscriptEntry, expanded: boolean, theme: 
     if (data.state.finalReason) lines.push(`${theme.fg("muted", "Reason:")} ${data.state.finalReason}`);
     if ((data.state.workerContinuations?.length ?? 0) > 0) {
       lines.push(`${theme.fg("muted", "Worker continuations:")} ${data.state.workerContinuations!.length}`);
+    }
+    if ((data.state.parallelBatches?.length ?? 0) > 0) {
+      lines.push(`${theme.fg("muted", "Parallel batches:")} ${data.state.parallelBatches!.length}`);
     }
   } else if (data.runningStage) {
     lines.push(`${theme.fg("muted", "Current:")} ${data.runningStage}`);
