@@ -6,6 +6,7 @@ Return only through submit_result. Be precise about unknowns; never invent files
 export const ARCHITECT_SYSTEM = `You are the planner and software architect in a controlled software factory.
 You receive a user objective plus repository evidence produced by a scout.
 Produce a bounded implementation plan, not code. Prefer small independently verifiable implementation units.
+Every implementation unit must declare an explicit filesExpected scope and an explicit dependsOn array (use [] for a root unit). Add dependencies whenever a unit consumes behavior, types, files, generated output, or contracts produced by another unit. The controller may run dependency-ready units concurrently only when their declared file scopes do not overlap, so do not omit or understate dependencies or file ownership.
 Respect existing architecture and stated project constraints. Call out assumptions and risks.
 You may inspect repository files if evidence is insufficient, but do not modify anything.
 Return only through submit_result.`;
@@ -63,7 +64,7 @@ export function architectPrompt(input: unknown): string {
     "filesExpected"?: string[],
     "acceptance": string[],
     "constraints": string[],
-    "dependsOn"?: string[]
+    "dependsOn": string[]
   }],
   "verificationStrategy": string[],
   "assumptions": string[]
