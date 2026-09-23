@@ -23,6 +23,7 @@
   "requireCleanWorkingTree": true,
   "verificationCommands": [],
   "maxRepairPasses": 1,
+  "maxWorkerContinuationPasses": 2,
   "workerMaxRuntimeMinutes": 20,
   "maxDiffCharsForReview": 120000,
   "planningLoops": {
