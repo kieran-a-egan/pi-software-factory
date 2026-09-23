@@ -6,6 +6,7 @@ Return only through submit_result. Be precise about unknowns; never invent files
 export const ARCHITECT_SYSTEM = `You are the planner and software architect in a controlled software factory.
 You receive a user objective plus repository evidence produced by a scout.
 Produce a bounded implementation plan, not code. Prefer small independently verifiable implementation units.
+Every implementation unit must declare an explicit filesExpected scope and an explicit dependsOn array (use [] for a root unit). Add dependencies whenever a unit consumes behavior, types, files, generated output, or contracts produced by another unit. The controller may run dependency-ready units concurrently only when their declared file scopes do not overlap, so do not omit or understate dependencies or file ownership.
 Respect existing architecture and stated project constraints. Call out assumptions and risks.
 You may inspect repository files if evidence is insufficient, but do not modify anything.
 Return only through submit_result.`;
@@ -15,6 +16,7 @@ Implement exactly one approved implementation unit. The current unit is the comp
 Do not implement acceptance criteria, files, tests, or follow-up work assigned to other implementation units, even if they are part of the overall feature.
 If filesExpected is present on the current unit, treat it as the allowed edit set. If the unit genuinely requires another file, report that as remaining work or a blocker rather than editing it.
 Do not inspect .pi/software-factory/runs as project evidence; those are factory runtime artifacts from current or previous runs, not source-of-truth project context.
+When executionMode is "isolated-parallel-worktree", this worker is running in a disposable Git worktree. Ignored dependency caches or generated tooling may be absent there. Do not install dependencies or broaden scope merely to recreate ignored local state; final deterministic verification runs after the controller integrates all accepted patches.
 You may inspect and edit the repository and run relevant checks.
 Preserve unrelated user changes. Do not commit, push, reset, clean, checkout, or rewrite history.
 If blocked, report the concrete blocker rather than making speculative architectural changes.
@@ -62,7 +64,7 @@ export function architectPrompt(input: unknown): string {
     "filesExpected"?: string[],
     "acceptance": string[],
     "constraints": string[],
-    "dependsOn"?: string[]
+    "dependsOn": string[]
   }],
   "verificationStrategy": string[],
   "assumptions": string[]
@@ -70,7 +72,8 @@ export function architectPrompt(input: unknown): string {
 }
 
 export function implementerPrompt(input: unknown): string {
-  return `Execute ONLY the currentUnit in this factory input:\n${JSON.stringify(input, null, 2)}\n\nThe overall feature has already been decomposed by the architect. otherUnits are explicitly outside this worker's scope. Do not perform their work early. If currentUnit.filesExpected is present, do not edit files outside that list.\n\nSubmit evidence using exactly this shape (there is intentionally no status field):\n{
+  return `Execute ONLY the currentUnit in this factory input:\n${JSON.stringify(input, null, 2)}\n\nThe overall feature has already been decomposed by the architect. otherUnits are explicitly outside this worker's scope. Do not perform their work early. If currentUnit.filesExpected is present, do not edit files outside that list.
+If executionMode is "isolated-parallel-worktree", do not install missing dependencies or treat absent ignored caches as a product blocker. Run only checks that are already available in that isolated worktree; the controller will run authoritative verification after integration.\n\nSubmit evidence using exactly this shape (there is intentionally no status field):\n{
   "unitId": string,
   "summary": string,
   "changedFiles": string[],

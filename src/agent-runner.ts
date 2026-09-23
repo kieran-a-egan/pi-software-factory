@@ -57,6 +57,7 @@ export interface RunCheckpointableAgentOptions<T> extends RunAgentOptions<T> {
   validateCheckpoint: (value: unknown) => WorkerCheckpoint;
   onContext?: (level: "warning" | "checkpoint", usage: ContextUsageSnapshot) => void;
   maxRuntimeMs?: number;
+  abortSignal?: AbortSignal;
 }
 
 function resourceDir(): string {
@@ -140,6 +141,7 @@ interface InternalRunOptions<T> extends RunAgentOptions<T> {
   validateCheckpoint?: (value: unknown) => WorkerCheckpoint;
   onContext?: (level: "warning" | "checkpoint", usage: ContextUsageSnapshot) => void;
   maxRuntimeMs?: number;
+  abortSignal?: AbortSignal;
 }
 
 async function runInternal<T>(options: InternalRunOptions<T>): Promise<{
@@ -277,7 +279,23 @@ async function runInternal<T>(options: InternalRunOptions<T>): Promise<{
 
   let metrics: AgentRunMetrics | undefined;
   let runtimeTimer: ReturnType<typeof setTimeout> | undefined;
+  let externallyAborted = false;
+  const onExternalAbort = () => {
+    externallyAborted = true;
+    void session.abort().catch(() => undefined);
+  };
+
+  if (options.abortSignal?.aborted) {
+    onExternalAbort();
+  } else {
+    options.abortSignal?.addEventListener("abort", onExternalAbort, { once: true });
+  }
+
   try {
+    if (externallyAborted) {
+      throw new Error(`${options.role} aborted by controller`);
+    }
+
     const promptPromise = session.prompt(options.prompt);
     if (options.maxRuntimeMs && options.maxRuntimeMs > 0) {
       await Promise.race([
@@ -295,6 +313,10 @@ async function runInternal<T>(options: InternalRunOptions<T>): Promise<{
       ]);
     } else {
       await promptPromise;
+    }
+
+    if (externallyAborted) {
+      throw new Error(`${options.role} aborted by controller`);
     }
 
     inspectContext();
@@ -317,6 +339,7 @@ async function runInternal<T>(options: InternalRunOptions<T>): Promise<{
     };
   } finally {
     if (runtimeTimer) clearTimeout(runtimeTimer);
+    options.abortSignal?.removeEventListener("abort", onExternalAbort);
     unsubscribe();
     session.dispose();
   }

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.0
+
+- add dependency-aware scheduling for implementation units
+- run dependency-ready units concurrently only when they declare explicit non-overlapping `filesExpected` scopes and explicit `dependsOn` arrays
+- isolate parallel Qwen workers in disposable detached Git worktrees created from an ephemeral snapshot of the current working tree
+- capture each accepted worktree as a patch and integrate a whole parallel batch only after every worker/gate succeeds
+- verify reported and actual changed paths against the unit scope and detect post-run cross-worker path overlap before integration
+- cancel sibling Qwen sessions when one parallel worker fails or routes to human intervention
+- fall back to sequential execution if parallel snapshot creation is unavailable
+- require architect plans to make dependency and file ownership explicit so concurrency is conservative by construction
+- persist implementation graph and parallel-batch artifacts and expose parallel-batch counts in transcript status
+- keep final deterministic verification authoritative after all patches are integrated
+
 ## 0.5.0
 
 - add bounded Jev-driven worker continuation for implementation and repair assignments

@@ -7,7 +7,7 @@ A Pi package that runs a controlled software-engineering pipeline using:
 - **local Qwen3.8-27B** for repository scouting, implementation, and repair
 - **deterministic tools** for Git/build/test/typecheck/lint truth
 
-Current version: **0.5.0**
+Current version: **0.6.0**
 
 ## Pipeline
 
@@ -48,6 +48,23 @@ Current version: **0.5.0**
 ```
 
 The controller owns the state machine. Models do not arbitrarily select the next agent.
+
+## v0.6 changes
+
+v0.6 adds conservative parallel execution for implementation units. The architect must declare an explicit `dependsOn` array and `filesExpected` scope for a unit to be considered for parallel execution. The controller only batches dependency-ready units whose file scopes do not overlap.
+
+Parallel workers never share the primary working tree. The controller creates an ephemeral Git snapshot of the current uncommitted project state, starts each worker in a disposable detached worktree, lets the existing Jev worker/continuation gates run there, then captures each accepted worktree as a patch. A batch is integrated into the primary tree only after every worker succeeds and the actual changed paths remain disjoint and inside the declared scopes. A failed worker cancels sibling Qwen sessions and leaves the primary tree untouched by that batch.
+
+Ignored dependency caches such as `node_modules` are intentionally not copied into isolated worktrees. Parallel-worker prompts therefore prohibit dependency installation and treat unavailable ignored tooling as non-authoritative; the normal deterministic verification stage still runs against the integrated primary tree.
+
+Default parallel settings:
+
+```text
+parallelImplementation.enabled:          true
+parallelImplementation.maxParallelUnits: 2
+```
+
+Units without explicit dependency/file-scope metadata continue sequentially.
 
 ## v0.5 changes
 
@@ -122,7 +139,7 @@ npm install
 git init
 git branch -M main
 git add -A
-git commit -m "Software Factory v0.5.0"
+git commit -m "Software Factory v0.6.0"
 
 pi install (Get-Location).Path
 ```
@@ -168,14 +185,14 @@ The package manifest points directly to `software-factory.ts`, so the extension 
 Once the repository has a remote, tag releases and install the Git source instead of the local path:
 
 ```powershell
-git tag v0.5.0
+git tag v0.6.0
 git push origin main --tags
 ```
 
 Then, for example:
 
 ```text
-pi install git:github.com/<owner>/pi-software-factory@v0.5.0
+pi install git:github.com/<owner>/pi-software-factory@v0.6.0
 ```
 
 Pi can update unpinned Git package sources with its package update commands; pinned refs remain fixed until explicitly changed.
@@ -242,6 +259,10 @@ Typical configuration:
   "planningLoops": {
     "maxRescoutPasses": 2,
     "maxReplanPasses": 2
+  },
+  "parallelImplementation": {
+    "enabled": true,
+    "maxParallelUnits": 2
   },
   "contextBudget": {
     "enabled": true,
@@ -324,6 +345,8 @@ Provider usage can be zero or incomplete if the configured OpenAI-compatible bac
 
 - Scout, architect, and reviewer are read-only.
 - Qwen implementer/repairer can edit and execute shell commands.
+- Dependency-ready implementation units may run in isolated Git worktrees when explicit dependency/file scopes prove they are non-overlapping.
+- Parallel worktree patches are integrated only after all workers in the batch pass their bounded Jev gates and deterministic scope checks.
 - Worker prompts prohibit commit, push, reset, clean, checkout, and history rewriting.
 - The factory does not commit or push.
 - A clean working tree is required by default.
@@ -349,6 +372,7 @@ pi-software-factory/
     ├── controller.ts
     ├── jev.ts
     ├── prompts.ts
+    ├── parallel.ts
     ├── storage.ts
     ├── types.ts
     ├── validate.ts
@@ -358,7 +382,7 @@ pi-software-factory/
 
 ## Transcript UI
 
-v0.5 continues the v0.2.2 transcript design and does not use Pi's dock widget. Factory progress is written as custom transcript entries, so it scrolls naturally with the conversation and is not clipped by terminal height. These entries are TUI/session state only and do not enter the LLM context. The currently executing stage is shown in Pi's one-line status bar.
+v0.6 continues the v0.2.2 transcript design and does not use Pi's dock widget. Factory progress is written as custom transcript entries, so it scrolls naturally with the conversation and is not clipped by terminal height. These entries are TUI/session state only and do not enter the LLM context. The currently executing stage is shown in Pi's one-line status bar.
 
 `/factory-status` appends the complete most-recent run summary and stage list to the transcript. Completed run state is also recovered from persisted session entries after an extension reload.
 
