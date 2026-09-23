@@ -4,7 +4,7 @@ import { loadConfig } from "./src/config.js";
 import { runFactory } from "./src/controller.js";
 import type { ContextUsageSnapshot, FactoryProgressEvent, FactoryRunState, StageTelemetry, TokenUsageSnapshot } from "./src/types.js";
 
-const VERSION = "0.6.0";
+const VERSION = "0.7.0";
 const ENTRY_TYPE = "software-factory";
 
 type TranscriptEntry =
@@ -50,6 +50,7 @@ type TranscriptEntry =
       state?: FactoryRunState;
       stages: StageTelemetry[];
       runningStage?: string;
+      runningStages?: string[];
     };
 
 function formatDuration(ms?: number): string {
@@ -105,6 +106,63 @@ function colorForFinalStatus(status: FactoryRunState["finalStatus"], theme: any,
   if (status === "accepted") return theme.fg("success", text);
   if (status === "failed" || status === "blocked") return theme.fg("error", text);
   return theme.fg("warning", text);
+}
+
+function decisionSummary(record: Record<string, any>): string {
+  const decision = record.decision ?? {};
+  const label = record.label ? ` · ${record.label}` : "";
+  const pass = typeof record.pass === "number"
+    ? ` · pass ${record.pass}`
+    : typeof record.repairPass === "number"
+      ? ` · repair ${record.repairPass}`
+      : "";
+  const routed = decision.action ?? decision.disposition ?? decision.requirementClarity;
+  const confidence = typeof decision.confidence === "number"
+    ? ` · conf ${decision.confidence.toFixed(2)}`
+    : typeof record.priorConfidence === "number"
+      ? ` · conf ${record.priorConfidence.toFixed(2)}`
+      : "";
+  return `${record.stage ?? "decision"}${label}${pass}${routed ? ` → ${routed}` : ""}${confidence}`;
+}
+
+function appendRunHistory(lines: string[], state: FactoryRunState, theme: any): void {
+  const checkpoints = state.checkpoints ?? [];
+  const continuations = state.workerContinuations ?? [];
+  const parallelBatches = state.parallelBatches ?? [];
+  const decisions = state.decisions ?? [];
+
+  if (checkpoints.length > 0 || continuations.length > 0 || parallelBatches.length > 0) {
+    lines.push("", theme.bold(theme.fg("muted", "Recovery / concurrency history")));
+    for (const checkpoint of checkpoints) {
+      const name = `${checkpoint.stage}${checkpoint.label ? ` (${checkpoint.label})` : ""}`;
+      lines.push(
+        theme.fg(
+          "dim",
+          `checkpoint #${checkpoint.index} · ${name} · ${checkpoint.context.tokens.toLocaleString()} ctx`,
+        ),
+      );
+    }
+    for (const continuation of continuations) {
+      lines.push(
+        theme.fg(
+          "dim",
+          `continue #${continuation.pass} · ${continuation.phase} · ${continuation.label} · conf ${continuation.priorConfidence.toFixed(2)}`,
+        ),
+      );
+    }
+    for (const batch of parallelBatches) {
+      lines.push(
+        theme.fg("dim", `parallel batch #${batch.index} · ${batch.unitIds.join(", ")}`),
+      );
+    }
+  }
+
+  if (decisions.length > 0) {
+    lines.push("", theme.bold(theme.fg("muted", "Decision history")));
+    for (const decision of decisions) {
+      lines.push(theme.fg("dim", decisionSummary(decision as Record<string, any>)));
+    }
+  }
 }
 
 function renderTranscriptEntry(data: TranscriptEntry, expanded: boolean, theme: any): string {
@@ -189,8 +247,17 @@ function renderTranscriptEntry(data: TranscriptEntry, expanded: boolean, theme: 
     if ((data.state.parallelBatches?.length ?? 0) > 0) {
       lines.push(`${theme.fg("muted", "Parallel batches:")} ${data.state.parallelBatches!.length}`);
     }
+    if ((data.state.decisions?.length ?? 0) > 0) {
+      lines.push(`${theme.fg("muted", "Decisions:")} ${data.state.decisions!.length}`);
+    }
+    if (data.state.rescoutPasses > 0 || data.state.replanPasses > 0 || data.state.planGatePasses > 1) {
+      lines.push(
+        `${theme.fg("muted", "Planning recovery:")} rescout ${data.state.rescoutPasses} · replan ${data.state.replanPasses} · gates ${data.state.planGatePasses}`,
+      );
+    }
     if (expanded && stages.length > 0) {
       lines.push("", theme.fg("dim", stages.map(stageSummary).join("\n")));
+      appendRunHistory(lines, data.state, theme);
     }
     return lines.join("\n");
   }
@@ -214,8 +281,21 @@ function renderTranscriptEntry(data: TranscriptEntry, expanded: boolean, theme: 
     if ((data.state.parallelBatches?.length ?? 0) > 0) {
       lines.push(`${theme.fg("muted", "Parallel batches:")} ${data.state.parallelBatches!.length}`);
     }
-  } else if (data.runningStage) {
-    lines.push(`${theme.fg("muted", "Current:")} ${data.runningStage}`);
+    if ((data.state.decisions?.length ?? 0) > 0) {
+      lines.push(`${theme.fg("muted", "Decisions:")} ${data.state.decisions!.length}`);
+    }
+    lines.push(
+      `${theme.fg("muted", "Planning:")} rescout ${data.state.rescoutPasses} · replan ${data.state.replanPasses} · gates ${data.state.planGatePasses}`,
+    );
+  } else {
+    const runningStages = data.runningStages?.length
+      ? data.runningStages
+      : data.runningStage
+        ? [data.runningStage]
+        : [];
+    if (runningStages.length > 0) {
+      lines.push(`${theme.fg("muted", "Current:")} ${runningStages.join(" | ")}`);
+    }
   }
 
   lines.push(`${theme.fg("muted", "Totals:")} ${data.stages.length} stages · ${formatDuration(totals.durationMs)} · ${formatTokens(totals.tokens)}`);
@@ -226,6 +306,7 @@ function renderTranscriptEntry(data: TranscriptEntry, expanded: boolean, theme: 
       return stage.outcome === "completed" ? theme.fg("success", line) : theme.fg("error", line);
     }));
   }
+  if (data.state) appendRunHistory(lines, data.state, theme);
 
   return lines.join("\n");
 }
@@ -246,6 +327,7 @@ export default function softwareFactory(pi: ExtensionAPI) {
   let lastState: FactoryRunState | undefined;
   let lastObjective: string | undefined;
   let progressEvents: FactoryProgressEvent[] = [];
+  const activeStages = new Map<string, string>();
 
   pi.registerEntryRenderer(ENTRY_TYPE, (entry, options, theme) => {
     const data = entry.data as TranscriptEntry;
@@ -278,6 +360,7 @@ export default function softwareFactory(pi: ExtensionAPI) {
       lastObjective = objective;
       lastState = undefined;
       progressEvents = [];
+      activeStages.clear();
       const config = loadConfig(ctx.cwd);
 
       pi.appendEntry(ENTRY_TYPE, {
@@ -293,7 +376,9 @@ export default function softwareFactory(pi: ExtensionAPI) {
           progressEvents.push(event);
           if (event.type === "started") {
             const label = event.label ? ` (${event.label})` : "";
-            ctx.ui.setStatus("software-factory", `Factory · ${event.stage}${label}`);
+            const name = `${event.stage}${label}`;
+            activeStages.set(`${event.stage}\u0000${event.label ?? ""}`, name);
+            ctx.ui.setStatus("software-factory", `Factory · ${name}`);
             return;
           }
 
@@ -324,6 +409,9 @@ export default function softwareFactory(pi: ExtensionAPI) {
             return;
           }
 
+          activeStages.delete(
+            `${event.telemetry.stage}\u0000${event.telemetry.label ?? ""}`,
+          );
           pi.appendEntry(ENTRY_TYPE, {
             kind: "stage",
             telemetry: event.telemetry,
@@ -353,6 +441,7 @@ export default function softwareFactory(pi: ExtensionAPI) {
         ctx.ui.notify(`Factory failed: ${message}`, "error");
       } finally {
         running = false;
+        activeStages.clear();
         ctx.ui.setStatus("software-factory", undefined);
       }
     },
@@ -389,6 +478,7 @@ export default function softwareFactory(pi: ExtensionAPI) {
         runningStage: running && lastStarted
           ? `${lastStarted.stage}${lastStarted.label ? ` (${lastStarted.label})` : ""}`
           : undefined,
+        runningStages: running ? [...activeStages.values()] : undefined,
       } satisfies TranscriptEntry);
     },
   });

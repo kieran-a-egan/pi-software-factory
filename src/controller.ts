@@ -38,6 +38,7 @@ import {
 import { createRunStore } from "./storage.js";
 import type {
   FactoryConfig,
+  FactoryDecisionRecord,
   FactoryProgressEvent,
   FactoryRunState,
   ImplementationUnit,
@@ -126,6 +127,7 @@ function buildRunSummary(state: FactoryRunState) {
     checkpointCount: state.checkpoints?.length ?? 0,
     workerContinuationCount: state.workerContinuations?.length ?? 0,
     parallelBatchCount: state.parallelBatches?.length ?? 0,
+    decisionCount: state.decisions?.length ?? 0,
     stageCount: telemetry.length,
     totalStageDurationMs: telemetry.reduce((sum, stage) => sum + stage.durationMs, 0),
     tokens,
@@ -265,6 +267,7 @@ export async function runFactory(
     planGatePasses: 0,
     workerContinuations: [],
     parallelBatches: [],
+    decisions: [],
     telemetry: [],
   };
 
@@ -275,6 +278,12 @@ export async function runFactory(
 
   const persistTelemetry = () => {
     store.write("telemetry.json", state.telemetry ?? []);
+    store.writeState(state);
+  };
+
+  const recordDecision = (decision: FactoryDecisionRecord) => {
+    (state.decisions ??= []).push(decision);
+    store.appendDecision(decision);
     store.writeState(state);
   };
 
@@ -476,7 +485,7 @@ export async function runFactory(
           at: new Date().toISOString(),
         };
         store.write(input.artifactName.replace(/\.json$/, "-scope-violation.json"), violation);
-        store.appendDecision({ stage: "worker-scope", ...violation });
+        recordDecision({ stage: "worker-scope", ...violation });
         state.finalStatus = "human";
         state.finalReason =
           `Worker reported edits outside the bounded file scope for ${input.label}: ${unexpectedFiles.join(", ")}.`;
@@ -499,7 +508,7 @@ export async function runFactory(
     state.workerGates ??= [];
     state.workerGates.push(gate);
     store.write(input.artifactName, gate);
-    store.appendDecision({
+    recordDecision({
       stage: "worker-gate",
       phase: input.phase,
       label: input.label,
@@ -601,8 +610,9 @@ export async function runFactory(
         previousReport: worker,
         gate,
       });
-      store.appendDecision({
+      recordDecision({
         stage: "worker-continuation",
+        at: record.createdAt,
         ...record,
         decision: gate,
       });
@@ -623,7 +633,7 @@ export async function runFactory(
     (value) => jevExtras(value, config.jev.model),
   );
   store.write("intake.json", state.intake);
-  store.appendDecision({ stage: "intake", at: new Date().toISOString(), decision: state.intake });
+  recordDecision({ stage: "intake", at: new Date().toISOString(), decision: state.intake });
 
   if (state.intake.requirementClarity === "major_gaps" && state.intake.confidence.requirementClarity >= config.jev.minChoiceConfidence) {
     return stop("human", "Jev classified the requirement as having major gaps.");
@@ -672,7 +682,7 @@ export async function runFactory(
     );
     state.planGate = gate;
     store.write(artifactName, gate);
-    store.appendDecision({
+    recordDecision({
       stage: "plan-gate",
       pass: state.planGatePasses,
       label,
@@ -878,6 +888,20 @@ export async function runFactory(
 
   const runSequentialImplementationUnit = async (unit: ImplementationUnit): Promise<boolean> => {
     const safeUnitId = unit.id.replace(/[^a-zA-Z0-9_.-]/g, "_");
+    let beforeSnapshot: string | undefined;
+
+    if (unit.filesExpected?.length) {
+      try {
+        beforeSnapshot = await createWorkingTreeSnapshot(cwd, runtimeStatusIgnores);
+      } catch (error: any) {
+        state.finalStatus = "human";
+        state.finalReason =
+          `Could not create a deterministic scope snapshot for implementation unit ${unit.id}: ${error?.message ?? String(error)}`;
+        setPhase("human");
+        return false;
+      }
+    }
+
     const worker = await runBoundedWorkerAssignment({
       phase: "implementation",
       role: "implementer",
@@ -890,7 +914,49 @@ export async function runFactory(
       basePrompt: buildImplementationPrompt(unit, "primary-sequential"),
       collectImplementationReport: true,
     });
-    return worker !== null;
+    if (!worker) return false;
+
+    if (beforeSnapshot && unit.filesExpected?.length) {
+      const change = await captureWorktreeChange(
+        cwd,
+        beforeSnapshot,
+        runtimeStatusIgnores,
+      );
+      const unexpectedPaths = changedPathsOutsideExpected(
+        change.changedPaths,
+        unit.filesExpected,
+      );
+      const reported = worker.changedFiles.map((path) => path.replace(/\\/g, "/"));
+      const actualUnreported = change.changedPaths.filter(
+        (path) => !reported.some((reportedPath) => pathsOverlap(path, reportedPath)),
+      );
+      const scopeEvidence = {
+        unitId: unit.id,
+        filesExpected: unit.filesExpected,
+        reportedChangedFiles: worker.changedFiles,
+        actualChangedPaths: change.changedPaths,
+        actualUnreported,
+        unexpectedPaths,
+        beforeSnapshot,
+        afterSnapshot: change.snapshotCommit,
+        at: new Date().toISOString(),
+      };
+      store.write(`implementation-scope-${safeUnitId}.json`, scopeEvidence);
+
+      if (unexpectedPaths.length > 0) {
+        recordDecision({
+          stage: "worker-scope-actual",
+          ...scopeEvidence,
+        });
+        state.finalStatus = "human";
+        state.finalReason =
+          `Implementation unit ${unit.id} changed files outside its deterministic scope: ${unexpectedPaths.join(", ")}.`;
+        setPhase("human");
+        return false;
+      }
+    }
+
+    return true;
   };
 
   while (pendingUnits.size > 0) {
@@ -1003,7 +1069,7 @@ export async function runFactory(
               at: new Date().toISOString(),
             };
             store.write(`parallel-scope-violation-${safeUnitId}.json`, violation);
-            store.appendDecision({ stage: "parallel-worker-scope", ...violation });
+            recordDecision({ stage: "parallel-worker-scope", ...violation });
             state.finalStatus = "human";
             state.finalReason =
               `Parallel worker ${unit.id} changed files outside its isolated file scope: ${unexpectedPaths.join(", ")}.`;
@@ -1216,7 +1282,7 @@ export async function runFactory(
     (value) => jevExtras(value, config.jev.model),
   );
   store.write("review-gate.json", state.reviewGate);
-  store.appendDecision({ stage: "review-gate", at: new Date().toISOString(), decision: state.reviewGate });
+  recordDecision({ stage: "review-gate", at: new Date().toISOString(), decision: state.reviewGate });
 
   while (
     state.reviewGate.action === "rework" &&
@@ -1274,7 +1340,7 @@ export async function runFactory(
       (value) => jevExtras(value, config.jev.model),
     );
     store.write(`review-gate-${state.repairPasses}.json`, state.reviewGate);
-    store.appendDecision({ stage: "review-gate", repairPass: state.repairPasses, at: new Date().toISOString(), decision: state.reviewGate });
+    recordDecision({ stage: "review-gate", repairPass: state.repairPasses, at: new Date().toISOString(), decision: state.reviewGate });
   }
 
   if (

@@ -7,7 +7,7 @@ A Pi package that runs a controlled software-engineering pipeline using:
 - **local Qwen3.8-27B** for repository scouting, implementation, and repair
 - **deterministic tools** for Git/build/test/typecheck/lint truth
 
-Current version: **0.6.0**
+Current version: **0.7.0**
 
 ## Pipeline
 
@@ -48,6 +48,14 @@ Current version: **0.6.0**
 ```
 
 The controller owns the state machine. Models do not arbitrarily select the next agent.
+
+## v0.7 changes
+
+v0.7 closes the remaining observability and scope-enforcement gaps.
+
+Every semantic routing decision is now retained in the in-memory/persisted run state as well as the append-only `decisions.jsonl` log. `/factory-status` shows decision history, planning recovery counts, context checkpoints, Jev worker continuations, parallel batches, and all currently active concurrent stages.
+
+Implementation-unit scope is now checked against Git truth in both execution modes. Parallel workers already captured isolated worktree diffs; v0.7 adds before/after ephemeral snapshots around sequential implementation units as well. The controller persists `implementation-scope-<unit>.json` with declared scope, worker-reported files, actual changed paths, and report omissions. Actual out-of-scope changes route to `HUMAN` even if the worker report did not disclose them.
 
 ## v0.6 changes
 
@@ -139,7 +147,7 @@ npm install
 git init
 git branch -M main
 git add -A
-git commit -m "Software Factory v0.6.0"
+git commit -m "Software Factory v0.7.0"
 
 pi install (Get-Location).Path
 ```
@@ -185,14 +193,14 @@ The package manifest points directly to `software-factory.ts`, so the extension 
 Once the repository has a remote, tag releases and install the Git source instead of the local path:
 
 ```powershell
-git tag v0.6.0
+git tag v0.7.0
 git push origin main --tags
 ```
 
 Then, for example:
 
 ```text
-pi install git:github.com/<owner>/pi-software-factory@v0.6.0
+pi install git:github.com/<owner>/pi-software-factory@v0.7.0
 ```
 
 Pi can update unpinned Git package sources with its package update commands; pinned refs remain fixed until explicitly changed.
@@ -347,6 +355,7 @@ Provider usage can be zero or incomplete if the configured OpenAI-compatible bac
 - Qwen implementer/repairer can edit and execute shell commands.
 - Dependency-ready implementation units may run in isolated Git worktrees when explicit dependency/file scopes prove they are non-overlapping.
 - Parallel worktree patches are integrated only after all workers in the batch pass their bounded Jev gates and deterministic scope checks.
+- Sequential implementation units are also checked against deterministic before/after Git snapshots, so worker-reported file lists are not trusted as scope truth.
 - Worker prompts prohibit commit, push, reset, clean, checkout, and history rewriting.
 - The factory does not commit or push.
 - A clean working tree is required by default.
@@ -382,9 +391,9 @@ pi-software-factory/
 
 ## Transcript UI
 
-v0.6 continues the v0.2.2 transcript design and does not use Pi's dock widget. Factory progress is written as custom transcript entries, so it scrolls naturally with the conversation and is not clipped by terminal height. These entries are TUI/session state only and do not enter the LLM context. The currently executing stage is shown in Pi's one-line status bar.
+v0.7 continues the v0.2.2 transcript design and does not use Pi's dock widget. Factory progress is written as custom transcript entries, so it scrolls naturally with the conversation and is not clipped by terminal height. These entries are TUI/session state only and do not enter the LLM context. The currently executing stage is shown in Pi's one-line status bar.
 
-`/factory-status` appends the complete most-recent run summary and stage list to the transcript. Completed run state is also recovered from persisted session entries after an extension reload.
+`/factory-status` appends the complete most-recent run summary, stage list, decision history, checkpoint/continuation history, and parallel-batch history to the transcript. While a run is active it also shows every currently active concurrent stage. Completed run state is recovered from persisted session entries after an extension reload.
 
 
 ## Qwen context budget

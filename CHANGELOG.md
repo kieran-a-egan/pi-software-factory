@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.0
+
+- persist semantic decision history in `state.json` as well as `decisions.jsonl`
+- add decision counts to run summaries and show bounded routing history in `/factory-status`
+- show context checkpoints, worker continuations, parallel batches, planning recovery, and active concurrent stages in the transcript status view
+- track multiple simultaneously active parallel stages instead of reporting only the most recently started one
+- harden sequential implementation-unit scope enforcement using deterministic before/after Git snapshots
+- compare actual changed paths with both `filesExpected` and the worker-reported `changedFiles`, persisting scope evidence per unit
+- route to human intervention when a sequential worker changes files outside its declared scope even if its report omits those edits
+- allow snapshot diff capture to exclude runtime artifact paths consistently
+
 ## 0.6.0
 
 - add dependency-aware scheduling for implementation units

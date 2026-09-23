@@ -115,8 +115,9 @@ export async function removeIsolatedWorktree(
 export async function captureWorktreeChange(
   worktreeDir: string,
   baseSnapshotCommit: string,
+  ignoredPrefixes: string[] = [],
 ): Promise<CapturedWorktreeChange> {
-  const snapshotCommit = await createWorkingTreeSnapshot(worktreeDir);
+  const snapshotCommit = await createWorkingTreeSnapshot(worktreeDir, ignoredPrefixes);
   const changed = await git(
     worktreeDir,
     ["diff", "--name-only", "--no-renames", baseSnapshotCommit, snapshotCommit],
