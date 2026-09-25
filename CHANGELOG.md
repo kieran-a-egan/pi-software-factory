@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.4
+
+- persist a run-level completion timestamp and report true wall-clock duration separately from cumulative stage work
+- compute exact overlap between stage intervals so concurrent work is visible in run summaries
+- stop presenting the sum of stage durations as elapsed run time when parallel stages overlap
+- show overlapping stage work and cumulative stage work in final and `/factory-status` transcript output
+- keep token totals cumulative while making concurrency timing explicit
+
 ## 0.7.3
 
 - preserve raw `git diff --binary` output exactly when capturing isolated worktree changes instead of trimming patch-significant trailing context
