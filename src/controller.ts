@@ -1339,6 +1339,11 @@ export async function runFactory(
       gateArtifactStem: `repair-gate-${state.repairPasses}`,
       systemPrompt: REPAIRER_SYSTEM,
       basePrompt: repairBasePrompt,
+      executionContext: {
+        executionMode: "repair",
+        authoritativeVerificationAfterWorker: true,
+        ignoredDependencyCachesMayBeAbsent: false,
+      },
       deterministicFailures,
     });
     if (!repair) return finish();
