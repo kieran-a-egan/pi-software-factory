@@ -8,6 +8,7 @@ import type {
   ReviewResult,
   ScoutResult,
   VerificationResult,
+  WorkerExecutionContext,
   WorkerGateDecision,
   WorkerReport,
 } from "./types.js";
@@ -118,12 +119,14 @@ export class JevDecisionEngine {
     phase: "implementation" | "repair";
     assignment: unknown;
     report: WorkerReport;
+    executionContext: WorkerExecutionContext;
     deterministicFailures?: Array<{ command: string; output: string }>;
   }): Promise<WorkerGateDecision> {
     const state = {
       phase: input.phase,
       assignment: input.assignment,
       report: input.report,
+      executionContext: input.executionContext,
       deterministicFailures: input.deterministicFailures,
     };
 
@@ -131,11 +134,11 @@ export class JevDecisionEngine {
       state,
       questions: {
         disposition: choice(
-          "Classify this worker report for workflow routing. The assignment object defines the worker's bounded scope; the overall objective is background only. Judge whether this assignment is complete enough to leave this worker and continue factory orchestration. Do not require work that belongs to a later implementation unit, and do not judge final software correctness because later units, deterministic verification, and independent review still follow.",
+          "Classify this worker report for workflow routing. The assignment object defines the worker's bounded scope and executionContext is authoritative routing metadata. Judge whether this assignment is complete enough to leave this worker and continue factory orchestration. Do not require work that belongs to a later implementation unit, and do not judge final software correctness because deterministic verification and independent review still follow. When executionContext.executionMode is isolated-parallel-worktree and authoritativeVerificationAfterWorker is true, inability to run repository test/typecheck commands solely because ignored dependency caches or tooling are absent is expected infrastructure isolation, not remaining assignment work and not a blocker. In that mode, use the worker's bounded implementation evidence, available local checks, blockers, and remainingWork to route the unit; authoritative project verification occurs only after successful batch integration.",
           {
-            ready: "The report coherently addresses the bounded assignment and no work remains inside this assignment. Work explicitly belonging to later implementation units does not prevent ready. Empty changedFiles is valid when no code change was actually required.",
+            ready: "The report coherently addresses the bounded assignment and no work remains inside this assignment. Work explicitly belonging to later implementation units does not prevent ready. In an isolated parallel worktree, deferred authoritative verification caused only by absent ignored dependency caches/tooling does not prevent ready. Empty changedFiles is valid when no code change was actually required.",
             continue: "Concrete work remains inside this same bounded assignment and the same worker should continue before the factory advances.",
-            blocked: "This bounded assignment cannot proceed because it requires external input, an unavailable dependency, permission, product decision, or architectural change.",
+            blocked: "This bounded assignment cannot proceed because it requires external input, a genuinely required unavailable dependency, permission, product decision, or architectural change. Do not classify expected missing ignored caches/tooling in an isolated parallel worktree as blocked when authoritative verification is explicitly deferred.",
             invalid: "The report is materially inconsistent with the bounded assignment, lacks enough evidence to route safely, or does not describe the assigned work.",
           },
         ),
