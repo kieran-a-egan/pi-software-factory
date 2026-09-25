@@ -99,8 +99,58 @@ function agentExtras<T extends { metrics: AgentRunMetrics }>(run: T): TelemetryE
   };
 }
 
+function stageTimingMetrics(stages: StageTelemetry[]) {
+  const intervals = stages
+    .map((stage) => ({
+      start: Date.parse(stage.startedAt),
+      end: Date.parse(stage.endedAt),
+      durationMs: stage.durationMs,
+    }))
+    .filter((interval) => Number.isFinite(interval.start) && Number.isFinite(interval.end) && interval.end >= interval.start)
+    .sort((a, b) => a.start - b.start);
+
+  const totalStageDurationMs = stages.reduce((sum, stage) => sum + stage.durationMs, 0);
+  if (intervals.length === 0) {
+    return {
+      totalStageDurationMs,
+      stageSpanMs: 0,
+      busyWallClockMs: 0,
+      overlappingStageDurationMs: 0,
+    };
+  }
+
+  let busyWallClockMs = 0;
+  let currentStart = intervals[0].start;
+  let currentEnd = intervals[0].end;
+
+  for (const interval of intervals.slice(1)) {
+    if (interval.start <= currentEnd) {
+      currentEnd = Math.max(currentEnd, interval.end);
+      continue;
+    }
+
+    busyWallClockMs += currentEnd - currentStart;
+    currentStart = interval.start;
+    currentEnd = interval.end;
+  }
+  busyWallClockMs += currentEnd - currentStart;
+
+  return {
+    totalStageDurationMs,
+    stageSpanMs: intervals.at(-1)!.end - intervals[0].start,
+    busyWallClockMs,
+    overlappingStageDurationMs: Math.max(0, totalStageDurationMs - busyWallClockMs),
+  };
+}
+
 function buildRunSummary(state: FactoryRunState) {
   const telemetry = state.telemetry ?? [];
+  const timing = stageTimingMetrics(telemetry);
+  const completedAt = state.completedAt ?? new Date().toISOString();
+  const runWallClockDurationMs = Math.max(
+    0,
+    Date.parse(completedAt) - Date.parse(state.createdAt),
+  );
   const tokens = telemetry.reduce<TokenUsageSnapshot>(
     (acc, stage) => {
       if (!stage.tokens) return acc;
@@ -118,7 +168,7 @@ function buildRunSummary(state: FactoryRunState) {
     id: state.id,
     objective: state.objective,
     createdAt: state.createdAt,
-    completedAt: new Date().toISOString(),
+    completedAt,
     finalStatus: state.finalStatus,
     finalReason: state.finalReason,
     repairPasses: state.repairPasses,
@@ -130,7 +180,11 @@ function buildRunSummary(state: FactoryRunState) {
     parallelBatchCount: state.parallelBatches?.length ?? 0,
     decisionCount: state.decisions?.length ?? 0,
     stageCount: telemetry.length,
-    totalStageDurationMs: telemetry.reduce((sum, stage) => sum + stage.durationMs, 0),
+    runWallClockDurationMs,
+    totalStageDurationMs: timing.totalStageDurationMs,
+    stageSpanMs: timing.stageSpanMs,
+    busyWallClockMs: timing.busyWallClockMs,
+    overlappingStageDurationMs: timing.overlappingStageDurationMs,
     tokens,
     estimatedCost: telemetry.reduce((sum, stage) => sum + (stage.cost ?? 0), 0),
     stages: telemetry,
@@ -330,6 +384,7 @@ export async function runFactory(
   };
 
   const finish = () => {
+    state.completedAt ??= new Date().toISOString();
     store.write("run-summary.json", buildRunSummary(state));
     store.writeState(state);
     return state;
