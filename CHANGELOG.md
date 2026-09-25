@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.3
+
+- preserve raw `git diff --binary` output exactly when capturing isolated worktree changes instead of trimming patch-significant trailing context
+- stop concatenating independent worker patches into one synthetic patch document
+- preflight the complete batch with `git apply --check` and then apply the original per-worker patch files together
+- record patch byte sizes in successful parallel-batch artifacts
+- fixes Windows parallel integration failures such as `corrupt patch at ...` after both workers and Jev gates have succeeded
+
 ## 0.7.2
 
 - pass explicit worker execution context into Jev worker routing

@@ -7,7 +7,7 @@ A Pi package that runs a controlled software-engineering pipeline using:
 - **local Qwen3.8-27B** for repository scouting, implementation, and repair
 - **deterministic tools** for Git/build/test/typecheck/lint truth
 
-Current version: **0.7.2**
+Current version: **0.7.3**
 
 ## Pipeline
 
@@ -48,6 +48,10 @@ Current version: **0.7.2**
 ```
 
 The controller owns the state machine. Models do not arbitrarily select the next agent.
+
+## v0.7.3 changes
+
+v0.7.3 fixes lossless patch transport from disposable parallel worktrees back into the primary working tree. Git diff output is now retained byte-for-byte at the text-stream level instead of passing through `String.trim()`, which can remove a patch-significant trailing blank context line. Independent worker diffs are also kept as separate patch files: the controller first runs `git apply --check` over the whole batch, then applies the original patch files together rather than concatenating them into a synthetic patch document.
 
 ## v0.7.2 changes
 
@@ -155,7 +159,7 @@ npm install
 git init
 git branch -M main
 git add -A
-git commit -m "Software Factory v0.7.2"
+git commit -m "Software Factory v0.7.3"
 
 pi install (Get-Location).Path
 ```
@@ -201,14 +205,14 @@ The package manifest points directly to `software-factory.ts`, so the extension 
 Once the repository has a remote, tag releases and install the Git source instead of the local path:
 
 ```powershell
-git tag v0.7.2
+git tag v0.7.3
 git push origin main --tags
 ```
 
 Then, for example:
 
 ```text
-pi install git:github.com/<owner>/pi-software-factory@v0.7.2
+pi install git:github.com/<owner>/pi-software-factory@v0.7.3
 ```
 
 Pi can update unpinned Git package sources with its package update commands; pinned refs remain fixed until explicitly changed.
@@ -399,7 +403,7 @@ pi-software-factory/
 
 ## Transcript UI
 
-v0.7.2 continues the v0.2.2 transcript design and does not use Pi's dock widget. Factory progress is written as custom transcript entries, so it scrolls naturally with the conversation and is not clipped by terminal height. These entries are TUI/session state only and do not enter the LLM context. The currently executing stage is shown in Pi's one-line status bar.
+v0.7.3 continues the v0.2.2 transcript design and does not use Pi's dock widget. Factory progress is written as custom transcript entries, so it scrolls naturally with the conversation and is not clipped by terminal height. These entries are TUI/session state only and do not enter the LLM context. The currently executing stage is shown in Pi's one-line status bar.
 
 `/factory-status` appends the complete most-recent run summary, stage list, decision history, checkpoint/continuation history, and parallel-batch history to the transcript. While a run is active it also shows every currently active concurrent stage. Completed run state is recovered from persisted session entries after an extension reload.
 

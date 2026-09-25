@@ -4,7 +4,7 @@ import { loadConfig } from "./src/config.js";
 import { runFactory } from "./src/controller.js";
 import type { ContextUsageSnapshot, FactoryProgressEvent, FactoryRunState, StageTelemetry, TokenUsageSnapshot } from "./src/types.js";
 
-const VERSION = "0.7.2";
+const VERSION = "0.7.3";
 const ENTRY_TYPE = "software-factory";
 
 type TranscriptEntry =

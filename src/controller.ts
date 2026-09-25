@@ -27,7 +27,7 @@ import {
   workerContinuationPrompt,
 } from "./prompts.js";
 import {
-  applyWorktreePatch,
+  applyWorktreePatches,
   captureWorktreeChange,
   changedPathsOutsideExpected,
   createIsolatedWorktree,
@@ -1162,15 +1162,14 @@ export async function runFactory(
       }
     }
 
-    const combinedPatch = successful
+    const patches = successful
       .map((result) => result.change.patch)
-      .filter((patch) => patch.trim())
-      .join("\n");
+      .filter((patch) => patch.length > 0 && patch.trim().length > 0);
 
     try {
       await runStage(
         { stage: "parallel-integrate", label: batchLabel, actor: "controller" },
-        () => applyWorktreePatch(cwd, combinedPatch),
+        () => applyWorktreePatches(cwd, patches),
       );
     } catch (error: any) {
       store.write(`parallel-batch-${parallelBatchIndex}.json`, {
@@ -1191,6 +1190,7 @@ export async function runFactory(
         id: result.unit.id,
         changedPaths: result.change.changedPaths,
         snapshotCommit: result.change.snapshotCommit,
+        patchBytes: Buffer.byteLength(result.change.patch, "utf8"),
       })),
     });
 
