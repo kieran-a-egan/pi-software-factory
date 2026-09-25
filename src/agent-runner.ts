@@ -136,6 +136,40 @@ If the assigned unit is already genuinely finished, call submit_result normally.
 }
 Do not put conversation history in the checkpoint. The factory will start a fresh worker session from it.`;
 
+
+const WORKER_REPORT_SCHEMA = Type.Object({
+  unitId: Type.String(),
+  summary: Type.String(),
+  changedFiles: Type.Array(Type.String()),
+  testsRun: Type.Array(Type.Object({
+    command: Type.String(),
+    result: Type.String(),
+  })),
+  decisions: Type.Array(Type.String()),
+  blockers: Type.Array(Type.String()),
+  remainingWork: Type.Array(Type.String()),
+  notes: Type.Array(Type.String()),
+});
+
+const WORKER_CHECKPOINT_SCHEMA = Type.Object({
+  unitId: Type.String(),
+  summary: Type.String(),
+  completedWork: Type.Array(Type.String()),
+  changedFiles: Type.Array(Type.String()),
+  decisions: Type.Array(Type.String()),
+  verifiedFacts: Type.Array(Type.String()),
+  remainingWork: Type.Array(Type.String()),
+  blockers: Type.Array(Type.String()),
+  relevantSymbols: Type.Array(Type.String()),
+  nextAction: Type.String(),
+});
+
+function submitResultSchema(role: AgentRole) {
+  return role === "implementer" || role === "repairer"
+    ? WORKER_REPORT_SCHEMA
+    : Type.Any();
+}
+
 interface InternalRunOptions<T> extends RunAgentOptions<T> {
   contextBudget?: ContextBudgetConfig;
   validateCheckpoint?: (value: unknown) => WorkerCheckpoint;
@@ -166,7 +200,7 @@ async function runInternal<T>(options: InternalRunOptions<T>): Promise<{
     name: "submit_result",
     label: "Submit Result",
     description: "Submit the final structured artifact for this factory stage. Call exactly once when complete.",
-    parameters: Type.Object({ result: Type.Any() }),
+    parameters: Type.Object({ result: submitResultSchema(options.role) }),
     execute: async (_toolCallId, params) => {
       submittedRaw = params.result;
       return {
@@ -184,7 +218,7 @@ async function runInternal<T>(options: InternalRunOptions<T>): Promise<{
       name: "submit_checkpoint",
       label: "Submit Checkpoint",
       description: "Submit compact factual continuation state when the factory requests a context-budget checkpoint.",
-      parameters: Type.Object({ checkpoint: Type.Any() }),
+      parameters: Type.Object({ checkpoint: WORKER_CHECKPOINT_SCHEMA }),
       execute: async (_toolCallId, params) => {
         checkpointRaw = params.checkpoint;
         return {
