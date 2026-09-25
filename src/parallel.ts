@@ -10,6 +10,7 @@ async function git(
   cwd: string,
   args: string[],
   env?: NodeJS.ProcessEnv,
+  trimOutput = true,
 ): Promise<string> {
   const { stdout, stderr } = await execFile("git", args, {
     cwd,
@@ -21,7 +22,7 @@ async function git(
     // Git writes benign progress messages to stderr for some commands. Callers
     // only need stdout and rely on execFile rejection for non-zero exit codes.
   }
-  return stdout.trim();
+  return trimOutput ? stdout.trim() : stdout;
 }
 
 function normalizePath(value: string): string {
@@ -125,6 +126,8 @@ export async function captureWorktreeChange(
   const patch = await git(
     worktreeDir,
     ["diff", "--binary", "--no-ext-diff", "--no-renames", baseSnapshotCommit, snapshotCommit],
+    undefined,
+    false,
   );
 
   return {
@@ -137,15 +140,20 @@ export async function captureWorktreeChange(
   };
 }
 
-export async function applyWorktreePatch(cwd: string, patch: string): Promise<void> {
-  if (!patch.trim()) return;
+export async function applyWorktreePatches(cwd: string, patches: string[]): Promise<void> {
+  const nonEmpty = patches.filter((patch) => patch.length > 0 && patch.trim().length > 0);
+  if (nonEmpty.length === 0) return;
 
-  const tempRoot = mkdtempSync(join(tmpdir(), "pi-sf-patch-"));
-  const patchPath = join(tempRoot, "change.patch");
-  writeFileSync(patchPath, patch, "utf8");
+  const tempRoot = mkdtempSync(join(tmpdir(), "pi-sf-patches-"));
+  const patchPaths = nonEmpty.map((patch, index) => {
+    const patchPath = join(tempRoot, `change-${String(index + 1).padStart(3, "0")}.patch`);
+    writeFileSync(patchPath, patch, "utf8");
+    return patchPath;
+  });
 
   try {
-    await git(cwd, ["apply", "--whitespace=nowarn", "--recount", patchPath]);
+    await git(cwd, ["apply", "--check", "--whitespace=nowarn", "--recount", ...patchPaths]);
+    await git(cwd, ["apply", "--whitespace=nowarn", "--recount", ...patchPaths]);
   } finally {
     rmSync(tempRoot, { recursive: true, force: true });
   }
