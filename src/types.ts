@@ -206,6 +206,12 @@ export interface WorkerReport {
   notes: string[];
 }
 
+export interface WorkerExecutionContext {
+  executionMode: "primary-sequential" | "isolated-parallel-worktree" | "repair";
+  authoritativeVerificationAfterWorker: boolean;
+  ignoredDependencyCachesMayBeAbsent: boolean;
+}
+
 export interface WorkerGateDecision {
   disposition: "ready" | "continue" | "blocked" | "invalid";
   confidence: number;
