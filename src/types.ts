@@ -259,6 +259,7 @@ export interface ReviewGateDecision {
 export interface FactoryRunState {
   id: string;
   createdAt: string;
+  completedAt?: string;
   cwd: string;
   objective: string;
   phase: string;
