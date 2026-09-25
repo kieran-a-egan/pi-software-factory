@@ -96,10 +96,47 @@ function aggregate(stages: StageTelemetry[]) {
     { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
   );
 
+  const intervals = stages
+    .map((stage) => ({
+      start: Date.parse(stage.startedAt),
+      end: Date.parse(stage.endedAt),
+    }))
+    .filter((interval) => Number.isFinite(interval.start) && Number.isFinite(interval.end) && interval.end >= interval.start)
+    .sort((a, b) => a.start - b.start);
+
+  let busyWallClockMs = 0;
+  if (intervals.length > 0) {
+    let currentStart = intervals[0].start;
+    let currentEnd = intervals[0].end;
+
+    for (const interval of intervals.slice(1)) {
+      if (interval.start <= currentEnd) {
+        currentEnd = Math.max(currentEnd, interval.end);
+        continue;
+      }
+      busyWallClockMs += currentEnd - currentStart;
+      currentStart = interval.start;
+      currentEnd = interval.end;
+    }
+    busyWallClockMs += currentEnd - currentStart;
+  }
+
+  const stageWorkMs = stages.reduce((sum, stage) => sum + stage.durationMs, 0);
   return {
-    durationMs: stages.reduce((sum, stage) => sum + stage.durationMs, 0),
+    stageWorkMs,
+    busyWallClockMs,
+    overlappingStageDurationMs: Math.max(0, stageWorkMs - busyWallClockMs),
+    stageSpanMs: intervals.length > 0 ? intervals.at(-1)!.end - intervals[0].start : 0,
     tokens,
   };
+}
+
+function runWallClockDuration(state: FactoryRunState): number | undefined {
+  if (!state.completedAt) return undefined;
+  const start = Date.parse(state.createdAt);
+  const end = Date.parse(state.completedAt);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return undefined;
+  return end - start;
 }
 
 function colorForFinalStatus(status: FactoryRunState["finalStatus"], theme: any, text: string): string {
@@ -232,8 +269,14 @@ function renderTranscriptEntry(data: TranscriptEntry, expanded: boolean, theme: 
       theme.bold(colorForFinalStatus(data.state.finalStatus, theme, `Software Factory · ${status}`)),
       `${theme.fg("muted", "Run:")} ${data.state.id}`,
       `${theme.fg("muted", "Result:")} ${data.state.finalReason ?? data.state.phase}`,
-      `${theme.fg("muted", "Stages:")} ${stages.length} · ${formatDuration(totals.durationMs)} · ${formatTokens(totals.tokens)}`,
+      `${theme.fg("muted", "Stages:")} ${stages.length} · ${formatDuration(runWallClockDuration(data.state) ?? totals.stageSpanMs)} wall · ${formatTokens(totals.tokens)}`,
     ];
+
+    if (totals.overlappingStageDurationMs > 0) {
+      lines.push(
+        `${theme.fg("muted", "Concurrency:")} ${formatDuration(totals.overlappingStageDurationMs)} overlapping stage work · ${formatDuration(totals.stageWorkMs)} cumulative stage work`,
+      );
+    }
 
     if (data.state.repairPasses > 0) {
       lines.push(`${theme.fg("muted", "Repairs:")} ${data.state.repairPasses}`);
@@ -298,7 +341,17 @@ function renderTranscriptEntry(data: TranscriptEntry, expanded: boolean, theme: 
     }
   }
 
-  lines.push(`${theme.fg("muted", "Totals:")} ${data.stages.length} stages · ${formatDuration(totals.durationMs)} · ${formatTokens(totals.tokens)}`);
+  const statusWallClock = data.state
+    ? runWallClockDuration(data.state) ?? totals.stageSpanMs
+    : totals.stageSpanMs;
+  lines.push(
+    `${theme.fg("muted", "Totals:")} ${data.stages.length} stages · ${formatDuration(statusWallClock)} wall · ${formatTokens(totals.tokens)}`,
+  );
+  if (totals.overlappingStageDurationMs > 0) {
+    lines.push(
+      `${theme.fg("muted", "Concurrency:")} ${formatDuration(totals.overlappingStageDurationMs)} overlapping stage work · ${formatDuration(totals.stageWorkMs)} cumulative stage work`,
+    );
+  }
 
   if (data.stages.length > 0) {
     lines.push("", ...data.stages.map((stage) => {
