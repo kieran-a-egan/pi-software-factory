@@ -47,6 +47,7 @@ import type {
   StageTelemetry,
   TokenUsageSnapshot,
   VerificationResult,
+  WorkerExecutionContext,
   WorkerGateDecision,
   WorkerReport,
 } from "./types.js";
@@ -470,6 +471,7 @@ export async function runFactory(
     label: string;
     assignment: unknown;
     report: WorkerReport;
+    executionContext: WorkerExecutionContext;
     deterministicFailures?: Array<{ command: string; output: string }>;
     artifactName: string;
   }): Promise<WorkerGateDecision | null> => {
@@ -500,6 +502,7 @@ export async function runFactory(
         phase: input.phase,
         assignment: input.assignment,
         report: input.report,
+        executionContext: input.executionContext,
         deterministicFailures: input.deterministicFailures,
       }),
       (value) => jevExtras(value, config.jev.model),
@@ -538,6 +541,7 @@ export async function runFactory(
     basePrompt: string;
     deterministicFailures?: Array<{ command: string; output: string }>;
     collectImplementationReport?: boolean;
+    executionContext: WorkerExecutionContext;
     workerCwd?: string;
     abortSignal?: AbortSignal;
   }): Promise<WorkerReport | null> => {
@@ -572,6 +576,7 @@ export async function runFactory(
           : `${input.label} continuation ${continuationPass}`,
         assignment: input.assignment,
         report: worker,
+        executionContext: input.executionContext,
         deterministicFailures: input.deterministicFailures,
         artifactName: `${input.gateArtifactStem}${suffix}.json`,
       });
