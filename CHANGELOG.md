@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.2
+
+- pass explicit worker execution context into Jev worker routing
+- distinguish primary sequential, isolated parallel-worktree, and repair execution modes at the semantic gate
+- make deferred post-integration verification authoritative for isolated parallel workers
+- prevent missing ignored dependency caches/tooling in disposable worktrees from being treated as unfinished assignment work or an external blocker
+- retain the existing Jev confidence threshold; this changes routing evidence rather than weakening the gate
+
 ## 0.7.1
 
 - strongly type `submit_result` for implementation/repair workers so local Qwen receives the concrete WorkerReport schema instead of an unconstrained payload

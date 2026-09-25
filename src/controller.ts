@@ -47,6 +47,7 @@ import type {
   StageTelemetry,
   TokenUsageSnapshot,
   VerificationResult,
+  WorkerExecutionContext,
   WorkerGateDecision,
   WorkerReport,
 } from "./types.js";
@@ -470,6 +471,7 @@ export async function runFactory(
     label: string;
     assignment: unknown;
     report: WorkerReport;
+    executionContext: WorkerExecutionContext;
     deterministicFailures?: Array<{ command: string; output: string }>;
     artifactName: string;
   }): Promise<WorkerGateDecision | null> => {
@@ -500,6 +502,7 @@ export async function runFactory(
         phase: input.phase,
         assignment: input.assignment,
         report: input.report,
+        executionContext: input.executionContext,
         deterministicFailures: input.deterministicFailures,
       }),
       (value) => jevExtras(value, config.jev.model),
@@ -538,6 +541,7 @@ export async function runFactory(
     basePrompt: string;
     deterministicFailures?: Array<{ command: string; output: string }>;
     collectImplementationReport?: boolean;
+    executionContext: WorkerExecutionContext;
     workerCwd?: string;
     abortSignal?: AbortSignal;
   }): Promise<WorkerReport | null> => {
@@ -572,6 +576,7 @@ export async function runFactory(
           : `${input.label} continuation ${continuationPass}`,
         assignment: input.assignment,
         report: worker,
+        executionContext: input.executionContext,
         deterministicFailures: input.deterministicFailures,
         artifactName: `${input.gateArtifactStem}${suffix}.json`,
       });
@@ -912,6 +917,11 @@ export async function runFactory(
       gateArtifactStem: `implementation-gate-${safeUnitId}`,
       systemPrompt: IMPLEMENTER_SYSTEM,
       basePrompt: buildImplementationPrompt(unit, "primary-sequential"),
+      executionContext: {
+        executionMode: "primary-sequential",
+        authoritativeVerificationAfterWorker: true,
+        ignoredDependencyCachesMayBeAbsent: false,
+      },
       collectImplementationReport: true,
     });
     if (!worker) return false;
@@ -1039,6 +1049,11 @@ export async function runFactory(
               "isolated-parallel-worktree",
               peerIds,
             ),
+            executionContext: {
+              executionMode: "isolated-parallel-worktree",
+              authoritativeVerificationAfterWorker: true,
+              ignoredDependencyCachesMayBeAbsent: true,
+            },
             collectImplementationReport: true,
             workerCwd: worktree.dir,
             abortSignal: abortControllers[index].signal,
@@ -1227,6 +1242,11 @@ export async function runFactory(
       gateArtifactStem: `repair-gate-${state.repairPasses}`,
       systemPrompt: REPAIRER_SYSTEM,
       basePrompt: repairBasePrompt,
+      executionContext: {
+        executionMode: "repair",
+        authoritativeVerificationAfterWorker: true,
+        ignoredDependencyCachesMayBeAbsent: false,
+      },
       deterministicFailures,
     });
     if (!repair) return finish();
@@ -1319,6 +1339,11 @@ export async function runFactory(
       gateArtifactStem: `repair-gate-${state.repairPasses}`,
       systemPrompt: REPAIRER_SYSTEM,
       basePrompt: repairBasePrompt,
+      executionContext: {
+        executionMode: "repair",
+        authoritativeVerificationAfterWorker: true,
+        ignoredDependencyCachesMayBeAbsent: false,
+      },
       deterministicFailures,
     });
     if (!repair) return finish();
