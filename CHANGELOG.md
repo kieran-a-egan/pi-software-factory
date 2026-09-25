@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.1
+
+- strongly type `submit_result` for implementation/repair workers so local Qwen receives the concrete WorkerReport schema instead of an unconstrained payload
+- strongly type context-checkpoint submissions with the WorkerCheckpoint schema
+- accept a JSON-encoded object string from a local worker as a narrow compatibility fallback, then run the normal strict structural validation
+- fixes parallel workers finishing with `WorkerReport must be an object` after otherwise completing their sessions
+
 ## 0.7.0
 
 - persist semantic decision history in `state.json` as well as `decisions.jsonl`
