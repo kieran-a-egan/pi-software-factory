@@ -11,6 +11,20 @@ function obj(value: unknown, name: string): Record<string, any> {
   return value as Record<string, any>;
 }
 
+function structuredObj(value: unknown, name: string): Record<string, any> {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      try {
+        value = JSON.parse(trimmed);
+      } catch {
+        throw new Error(`${name} must be an object; received invalid JSON text`);
+      }
+    }
+  }
+  return obj(value, name);
+}
+
 function str(value: unknown, name: string): string {
   if (typeof value !== "string") throw new Error(`${name} must be a string`);
   return value;
@@ -70,7 +84,7 @@ export function validateArchitecture(value: unknown): ArchitectureResult {
 
 /** Structural validation only. Semantic completion/blocking is classified by Jev. */
 export function validateWorkerReport(value: unknown): WorkerReport {
-  const v = obj(value, "WorkerReport");
+  const v = structuredObj(value, "WorkerReport");
 
   // Worker reports contain evidence, not verdicts. Ignore any legacy/model-added
   // `status` field rather than interpreting it. `unresolved` is accepted as a
@@ -100,7 +114,7 @@ export function validateWorkerReport(value: unknown): WorkerReport {
 
 
 export function validateWorkerCheckpoint(value: unknown): WorkerCheckpoint {
-  const v = obj(value, "WorkerCheckpoint");
+  const v = structuredObj(value, "WorkerCheckpoint");
   return {
     unitId: str(v.unitId, "unitId"),
     summary: str(v.summary, "summary"),
