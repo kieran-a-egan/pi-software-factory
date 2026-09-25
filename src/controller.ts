@@ -917,6 +917,11 @@ export async function runFactory(
       gateArtifactStem: `implementation-gate-${safeUnitId}`,
       systemPrompt: IMPLEMENTER_SYSTEM,
       basePrompt: buildImplementationPrompt(unit, "primary-sequential"),
+      executionContext: {
+        executionMode: "primary-sequential",
+        authoritativeVerificationAfterWorker: true,
+        ignoredDependencyCachesMayBeAbsent: false,
+      },
       collectImplementationReport: true,
     });
     if (!worker) return false;
@@ -1044,6 +1049,11 @@ export async function runFactory(
               "isolated-parallel-worktree",
               peerIds,
             ),
+            executionContext: {
+              executionMode: "isolated-parallel-worktree",
+              authoritativeVerificationAfterWorker: true,
+              ignoredDependencyCachesMayBeAbsent: true,
+            },
             collectImplementationReport: true,
             workerCwd: worktree.dir,
             abortSignal: abortControllers[index].signal,
@@ -1232,6 +1242,11 @@ export async function runFactory(
       gateArtifactStem: `repair-gate-${state.repairPasses}`,
       systemPrompt: REPAIRER_SYSTEM,
       basePrompt: repairBasePrompt,
+      executionContext: {
+        executionMode: "repair",
+        authoritativeVerificationAfterWorker: true,
+        ignoredDependencyCachesMayBeAbsent: false,
+      },
       deterministicFailures,
     });
     if (!repair) return finish();
