@@ -64,7 +64,7 @@ export type ProgressFn = (event: FactoryProgressEvent) => void;
 
 type TelemetryExtras = Partial<Pick<
   StageTelemetry,
-  "model" | "tokens" | "cost" | "contextUsage" | "maxContextTokens" | "contextWindow" | "compactions" | "checkpointRequested"
+  "model" | "tokens" | "cost" | "contextUsage" | "maxContextTokens" | "contextWindow" | "compactions" | "checkpointRequested" | "submissionRecoveryAttempted"
 >>;
 
 function tokenSnapshotFromJev(value: any): TokenUsageSnapshot | undefined {
@@ -96,6 +96,7 @@ function agentExtras<T extends { metrics: AgentRunMetrics }>(run: T): TelemetryE
     contextWindow: run.metrics.contextWindow,
     compactions: run.metrics.compactions,
     checkpointRequested: run.metrics.checkpointRequested,
+    submissionRecoveryAttempted: run.metrics.submissionRecoveryAttempted,
   };
 }
 

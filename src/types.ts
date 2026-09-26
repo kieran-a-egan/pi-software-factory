@@ -99,6 +99,7 @@ export interface StageTelemetry {
   contextWindow?: number;
   compactions?: number;
   checkpointRequested?: boolean;
+  submissionRecoveryAttempted?: boolean;
   error?: string;
 }
 

@@ -29,6 +29,7 @@ export interface AgentRunMetrics {
   contextWindow?: number;
   compactions?: number;
   checkpointRequested?: boolean;
+  submissionRecoveryAttempted?: boolean;
 }
 
 export interface AgentRunResult<T> {
@@ -136,6 +137,83 @@ If the assigned unit is already genuinely finished, call submit_result normally.
 }
 Do not put conversation history in the checkpoint. The factory will start a fresh worker session from it.`;
 
+const RESULT_SUBMISSION_RECOVERY = `FACTORY STRUCTURED SUBMISSION REQUIRED.
+You finished the stage without calling submit_result.
+Do not continue investigation, implementation, review, or repository exploration.
+Using only the evidence already gathered in this session, call submit_result exactly once with the required structured result.
+Make no other tool calls.`;
+
+const CHECKPOINT_SUBMISSION_RECOVERY = `FACTORY STRUCTURED SUBMISSION REQUIRED.
+You finished the worker turn without calling submit_result or submit_checkpoint after a context checkpoint was requested.
+Do not continue implementation or repository exploration.
+If the bounded assignment is genuinely finished, call submit_result exactly once. Otherwise call submit_checkpoint exactly once with compact factual continuation state.
+Make no other tool calls.`;
+
+
+const SCOUT_RESULT_SCHEMA = Type.Object({
+  summary: Type.String(),
+  files: Type.Array(Type.Object({
+    path: Type.String(),
+    relevance: Type.String(),
+  })),
+  symbols: Type.Array(Type.Object({
+    name: Type.String(),
+    path: Type.String(),
+    relevance: Type.String(),
+  })),
+  relationships: Type.Array(Type.String()),
+  constraints: Type.Array(Type.String()),
+  tests: Type.Array(Type.String()),
+  unknowns: Type.Array(Type.String()),
+  recommendedReads: Type.Array(Type.String()),
+});
+
+const IMPLEMENTATION_UNIT_SCHEMA = Type.Object({
+  id: Type.String(),
+  objective: Type.String(),
+  rationale: Type.Optional(Type.String()),
+  filesExpected: Type.Optional(Type.Array(Type.String())),
+  acceptance: Type.Array(Type.String()),
+  constraints: Type.Array(Type.String()),
+  dependsOn: Type.Optional(Type.Array(Type.String())),
+});
+
+const ARCHITECTURE_RESULT_SCHEMA = Type.Object({
+  summary: Type.String(),
+  approach: Type.String(),
+  architecturalDecisions: Type.Array(Type.String()),
+  risks: Type.Array(Type.String()),
+  implementationUnits: Type.Array(IMPLEMENTATION_UNIT_SCHEMA),
+  verificationStrategy: Type.Array(Type.String()),
+  assumptions: Type.Array(Type.String()),
+});
+
+const REVIEW_FINDING_SCHEMA = Type.Object({
+  severity: Type.Union([
+    Type.Literal("info"),
+    Type.Literal("minor"),
+    Type.Literal("major"),
+    Type.Literal("critical"),
+  ]),
+  title: Type.String(),
+  explanation: Type.String(),
+  file: Type.Optional(Type.String()),
+  line: Type.Optional(Type.Number()),
+  suggestedFix: Type.Optional(Type.String()),
+});
+
+const REVIEW_RESULT_SCHEMA = Type.Object({
+  summary: Type.String(),
+  verdict: Type.Union([
+    Type.Literal("clean"),
+    Type.Literal("changes_requested"),
+    Type.Literal("architectural_issue"),
+    Type.Literal("uncertain"),
+  ]),
+  findings: Type.Array(REVIEW_FINDING_SCHEMA),
+  requirementCoverage: Type.Array(Type.String()),
+  testGaps: Type.Array(Type.String()),
+});
 
 const WORKER_REPORT_SCHEMA = Type.Object({
   unitId: Type.String(),
@@ -165,9 +243,17 @@ const WORKER_CHECKPOINT_SCHEMA = Type.Object({
 });
 
 function submitResultSchema(role: AgentRole) {
-  return role === "implementer" || role === "repairer"
-    ? WORKER_REPORT_SCHEMA
-    : Type.Any();
+  switch (role) {
+    case "scout":
+      return SCOUT_RESULT_SCHEMA;
+    case "architect":
+      return ARCHITECTURE_RESULT_SCHEMA;
+    case "reviewer":
+      return REVIEW_RESULT_SCHEMA;
+    case "implementer":
+    case "repairer":
+      return WORKER_REPORT_SCHEMA;
+  }
 }
 
 interface InternalRunOptions<T> extends RunAgentOptions<T> {
@@ -312,8 +398,8 @@ async function runInternal<T>(options: InternalRunOptions<T>): Promise<{
   });
 
   let metrics: AgentRunMetrics | undefined;
-  let runtimeTimer: ReturnType<typeof setTimeout> | undefined;
   let externallyAborted = false;
+  let submissionRecoveryAttempted = false;
   const onExternalAbort = () => {
     externallyAborted = true;
     void session.abort().catch(() => undefined);
@@ -325,35 +411,69 @@ async function runInternal<T>(options: InternalRunOptions<T>): Promise<{
     options.abortSignal?.addEventListener("abort", onExternalAbort, { once: true });
   }
 
+  const runtimeDeadline = options.maxRuntimeMs && options.maxRuntimeMs > 0
+    ? Date.now() + options.maxRuntimeMs
+    : undefined;
+  const timeoutError = () =>
+    new Error(
+      `${options.role} exceeded max runtime of ${Math.round(options.maxRuntimeMs! / 60_000)} minute(s)`,
+    );
+  const promptWithRuntimeLimit = async (prompt: string) => {
+    if (!runtimeDeadline) {
+      await session.prompt(prompt);
+      return;
+    }
+
+    const remainingMs = runtimeDeadline - Date.now();
+    if (remainingMs <= 0) {
+      void session.abort().catch(() => undefined);
+      throw timeoutError();
+    }
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        session.prompt(prompt),
+        new Promise<void>((_, reject) => {
+          timer = setTimeout(() => {
+            void session.abort().catch(() => undefined);
+            reject(timeoutError());
+          }, remainingMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+
   try {
     if (externallyAborted) {
       throw new Error(`${options.role} aborted by controller`);
     }
 
-    const promptPromise = session.prompt(options.prompt);
-    if (options.maxRuntimeMs && options.maxRuntimeMs > 0) {
-      await Promise.race([
-        promptPromise,
-        new Promise<void>((_, reject) => {
-          runtimeTimer = setTimeout(() => {
-            void session.abort().catch(() => undefined);
-            reject(
-              new Error(
-                `${options.role} exceeded max runtime of ${Math.round(options.maxRuntimeMs! / 60_000)} minute(s)`,
-              ),
-            );
-          }, options.maxRuntimeMs);
-        }),
-      ]);
-    } else {
-      await promptPromise;
-    }
+    await promptWithRuntimeLimit(options.prompt);
 
     if (externallyAborted) {
       throw new Error(`${options.role} aborted by controller`);
     }
 
     inspectContext();
+
+    if (submittedRaw === undefined && checkpointRaw === undefined) {
+      submissionRecoveryAttempted = true;
+      const recoveryPrompt = checkpointRequested && options.validateCheckpoint
+        ? CHECKPOINT_SUBMISSION_RECOVERY
+        : RESULT_SUBMISSION_RECOVERY;
+
+      await promptWithRuntimeLimit(recoveryPrompt);
+
+      if (externallyAborted) {
+        throw new Error(`${options.role} aborted by controller`);
+      }
+
+      inspectContext();
+    }
+
     const stats = session.getSessionStats();
     metrics = {
       model: `${options.model.provider}/${options.model.model}`,
@@ -370,9 +490,9 @@ async function runInternal<T>(options: InternalRunOptions<T>): Promise<{
       contextWindow: latestContext?.contextWindow ?? modelContextWindow,
       compactions,
       checkpointRequested,
+      submissionRecoveryAttempted,
     };
   } finally {
-    if (runtimeTimer) clearTimeout(runtimeTimer);
     options.abortSignal?.removeEventListener("abort", onExternalAbort);
     unsubscribe();
     session.dispose();
@@ -386,6 +506,7 @@ async function runInternal<T>(options: InternalRunOptions<T>): Promise<{
     contextWindow: latestContext?.contextWindow ?? modelContextWindow,
     compactions,
     checkpointRequested,
+    submissionRecoveryAttempted,
   };
 
   if (submittedRaw !== undefined) {

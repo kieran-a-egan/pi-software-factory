@@ -4,7 +4,7 @@ import { loadConfig } from "./src/config.js";
 import { runFactory } from "./src/controller.js";
 import type { ContextUsageSnapshot, FactoryProgressEvent, FactoryRunState, StageTelemetry, TokenUsageSnapshot } from "./src/types.js";
 
-const VERSION = "0.7.4";
+const VERSION = "0.7.5";
 const ENTRY_TYPE = "software-factory";
 
 type TranscriptEntry =
@@ -232,6 +232,9 @@ function renderTranscriptEntry(data: TranscriptEntry, expanded: boolean, theme: 
       details.push(`${theme.fg("muted", "Max context:")} ${stage.maxContextTokens.toLocaleString()}${window} tok`);
     }
     if (stage.compactions) details.push(`${theme.fg("muted", "Pi compactions:")} ${stage.compactions}`);
+    if (stage.submissionRecoveryAttempted) {
+      details.push(`${theme.fg("muted", "Submission recovery:")} attempted`);
+    }
     if (stage.error) details.push(theme.fg("error", `Error: ${stage.error}`));
     return details.join("\n");
   }
