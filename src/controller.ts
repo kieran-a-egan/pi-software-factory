@@ -41,6 +41,7 @@ import {
   selectParallelUnits,
   unexpectedReportedFiles,
 } from "./orchestration.js";
+import { evaluateWorkerGateConfidence } from "./worker-routing.js";
 import { createRunStore } from "./storage.js";
 import { stageTimingMetrics } from "./timing.js";
 import type {
@@ -445,6 +446,13 @@ export async function runFactory(
       (value) => jevExtras(value, config.jev.model),
     );
 
+    const routing = evaluateWorkerGateConfidence({
+      phase: input.phase,
+      gate,
+      minChoiceConfidence: config.jev.minChoiceConfidence,
+      authoritativeVerificationAfterWorker: input.executionContext.authoritativeVerificationAfterWorker,
+    });
+
     state.workerGates ??= [];
     state.workerGates.push(gate);
     store.write(input.artifactName, gate);
@@ -454,9 +462,10 @@ export async function runFactory(
       label: input.label,
       at: new Date().toISOString(),
       decision: gate,
+      confidenceRouting: routing,
     });
 
-    if (gate.confidence < config.jev.minChoiceConfidence) {
+    if (routing.outcome === "human") {
       state.finalStatus = "human";
       state.finalReason = `Jev worker gate confidence is below threshold for ${input.label}: ${gate.confidence.toFixed(3)}.`;
       setPhase("human");
