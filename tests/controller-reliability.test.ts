@@ -379,11 +379,18 @@ describe("controller release reliability", () => {
     expect(json(runDir(state), scopeFile).actualChangedPaths).toEqual([`${id}.txt`]);
   });
 
-  it("excludes runtime artifacts during sequential snapshots, even with a failing Git clean filter", async () => {
+  it("crosses sequential scope snapshots when the runtime prefix is Git-ignored, even with a failing clean filter", async () => {
+    // Reproduce the real host setup: the run root is ignored locally, while
+    // runtime content is also covered by a required clean filter that must
+    // never be invoked by scope snapshot capture.
+    writeFileSync(join(cwd, ".git", "info", "exclude"), ".pi/software-factory/runs/\n");
     writeFileSync(join(cwd, ".git", "info", "attributes"), ".pi/software-factory/runs/** filter=fail\n");
     await git(cwd, "config", "filter.fail.clean", 'node -e "process.exit(1)"');
     await git(cwd, "config", "filter.fail.required", "true");
+
     const state = await run();
+
+    expect(workerCalls).toBeGreaterThan(0);
     expect(state.finalStatus, state.finalReason).toBe("accepted");
     expect(json(runDir(state), "source-after.json").diff).not.toContain(".pi/software-factory/runs");
   });
