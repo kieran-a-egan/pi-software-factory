@@ -30,6 +30,7 @@ import { runFactory } from "../src/controller.js";
 import * as gitEvidence from "../src/git-evidence.js";
 import { verify } from "../src/verification.js";
 import type { FactoryConfig, FactoryRunState } from "../src/types.js";
+import { GIT_INTEGRATION_TIMEOUT_MS } from "./helpers/git-integration-timeout.js";
 
 const execFileP = promisify(execFile);
 
@@ -164,8 +165,6 @@ describe("runFactory baseline verification gate", () => {
     expect(summary.stages.map((stage: any) => stage.stage)).toEqual(["preflight", "baseline-verify"]);
   });
 
-  // Two full runs include baseline and before/after safety captures; Windows CI
-  // took 4,980ms on Node 22, leaving no headroom under Vitest's 5s default.
   it("stops on a failing baseline with the baseline-specific reason (not the key error) and never initializes a model even when a key is set", async () => {
     const dir = tempDir();
     await initCleanRepo(dir);
@@ -197,7 +196,7 @@ describe("runFactory baseline verification gate", () => {
       `Repository baseline verification failed before implementation. Failed checks: ${FAIL_A_CMD}`,
     );
     expect(createSpy).not.toHaveBeenCalled();
-  }, process.platform === "win32" ? 10_000 : 5_000);
+  });
 
   it("persists every configured command in order with exit codes and output, and lists all failed commands in the stop reason", async () => {
     const dir = tempDir();
@@ -416,4 +415,4 @@ describe("runFactory baseline verification gate", () => {
     // The preflight evidence did capture the dirty tracked change.
     expect(readJson(runDir, "preflight.json").gitStatus).toContain("src/app.js");
   });
-});
+}, GIT_INTEGRATION_TIMEOUT_MS);

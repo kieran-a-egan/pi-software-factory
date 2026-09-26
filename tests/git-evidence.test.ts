@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { captureGitEvidence } from "../src/git-evidence.js";
+import { GIT_INTEGRATION_TIMEOUT_MS } from "./helpers/git-integration-timeout.js";
 
 const execFileP = promisify(execFile);
 
@@ -367,4 +368,4 @@ describe("captureGitEvidence", () => {
 
     expect(readdirSync(scratchBase)).toEqual([]);
   });
-});
+}, GIT_INTEGRATION_TIMEOUT_MS);

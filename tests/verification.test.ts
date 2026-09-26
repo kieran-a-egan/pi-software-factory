@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { gitStatus, verify } from "../src/verification.js";
+import { GIT_INTEGRATION_TIMEOUT_MS } from "./helpers/git-integration-timeout.js";
 
 const execFileP = promisify(execFile);
 
@@ -419,4 +420,4 @@ describe("verify() review-evidence contract", () => {
     expect(result.checks[0].passed).toBe(true);
     expect(result.checks[0].exitCode).toBe(0);
   });
-});
+}, GIT_INTEGRATION_TIMEOUT_MS);
