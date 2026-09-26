@@ -93,7 +93,6 @@ async function removeFixtureWorktrees(repo: string) {
     // have a .git file. Path spelling (including Windows aliases) is irrelevant.
     if (!lstatSync(join(dir, ".git")).isFile()) continue;
     await git(repo, "worktree", "remove", "--force", dir);
-    rmSync(join(dir, ".."), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 
@@ -127,7 +126,8 @@ describe("controller release reliability", () => {
 
       expect(await git(alias, "rev-parse", "HEAD")).toBe(originalHead);
       expect(readFileSync(join(cwd, "a.txt"), "utf8")).toBe("baseline a\n");
-      expect(existsSync(linkedRoot)).toBe(false);
+      expect(await git(alias, "status", "--porcelain")).toBe("");
+      expect(existsSync(linked)).toBe(false);
       expect((await git(alias, "worktree", "list", "--porcelain", "-z")).split("\0")
         .filter((field) => field.startsWith("worktree "))).toHaveLength(1);
     } finally {
