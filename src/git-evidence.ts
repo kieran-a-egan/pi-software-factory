@@ -31,6 +31,20 @@ export interface CaptureGitEvidenceOptions {
   scratchBaseDir?: string;
 }
 
+export interface GitTreeCapture {
+  /** Repository root used for all capture operations. */
+  repoRoot: string;
+  /**
+   * Immutable capture baseline. This is a commit object ID for an established
+   * repository and the empty-tree object ID for a genuinely unborn branch.
+   */
+  baseline: string;
+  /** Tree object representing the captured worktree outside ignored prefixes. */
+  capturedTree: string;
+  /** Normalized literal repository-relative prefixes excluded during capture. */
+  ignoredPrefixes: string[];
+}
+
 function normalizePath(value: string): string {
   return value.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/$/, "");
 }
@@ -195,38 +209,30 @@ async function resolveBaselineTree(cwd: string, env: NodeJS.ProcessEnv): Promise
 }
 
 /**
- * Capture the current worktree as lossless Git evidence using a temporary,
- * isolated index.
+ * Capture the current worktree into a Git tree using one isolated scratch
+ * index and explicit file-level pathspecs.
+ *
+ * This is the single staging primitive for both source evidence and
+ * implementation-scope snapshots. Keeping staging here prevents callers from
+ * reintroducing broad `git add -A -- . <exclude>` traversals, which fail when
+ * an excluded prefix is itself Git-ignored and can invoke filters or embedded
+ * repositories beneath paths that must never be captured.
  *
  * Safety guarantees:
- * - A scratch `GIT_INDEX_FILE` is used for every scratch-index git command;
- *   the real index is only ever read (via `ls-files`), never staged into or
- *   mutated.
- * - The scratch index is seeded from one captured immutable baseline object ID,
- *   current changes are staged, and a tree is written with `write-tree` (no
- *   commit is ever created).
- * - The temporary index directory is removed on both success and failure.
- *
- * `ignoredPrefixes` are literal repository-relative file/directory boundaries
- * (not Git globs). Only individually selected paths outside those boundaries
- * are staged in the scratch index. All prefixes also filter the final diff
- * and stat, so tracked paths under them produce no evidence or false deletions.
- *
- * Paths tracked in the real index (e.g. staged with `git add -f` despite
- * .gitignore, or staged before a new ignore rule landed) are part of the
- * implementation and are force-added into the scratch snapshot; ordinarily
- * ignored untracked files remain excluded.
- *
- * Ordinary untracked candidates honor Git's own ignore rules via `ls-files`.
- *
- * Rejects (after cleanup) on any Git error or stdout buffer overflow; it never
- * returns a partial or synthesized patch.
+ * - The real repository index is only read, never mutated.
+ * - Excluded prefixes are literal repository-relative path boundaries.
+ * - Excluded tracked paths retain their baseline entries, so no false
+ *   deletions are synthesized.
+ * - Normal untracked candidates obey Git ignore rules.
+ * - Files deliberately tracked in the real index despite ignore rules are
+ *   force-added only when they are outside excluded prefixes.
+ * - Candidate paths are passed with NUL-delimited literal pathspec input.
  */
-export async function captureGitEvidence(
+export async function captureGitTree(
   cwd: string,
   ignoredPrefixes: string[] = [],
   options: CaptureGitEvidenceOptions = {},
-): Promise<GitEvidence> {
+): Promise<GitTreeCapture> {
   const baseDir = options.scratchBaseDir ?? tmpdir();
   const tempRoot = mkdtempSync(join(baseDir, "pi-sf-evidence-"));
   const indexPath = join(tempRoot, "index");
@@ -244,71 +250,108 @@ export async function captureGitEvidence(
     );
     const realIndexFiles = (await git(repoRoot, ["ls-files", "-z"], withoutIndexEnv(), false))
       .split("\0").filter(Boolean);
-    const untrackedFiles = (await git(repoRoot, ["ls-files", "--others", "--exclude-standard", "-z", "--", ".", ...exclusions], withoutIndexEnv(), false))
-      .split("\0").filter(Boolean);
+    const untrackedFiles = (await git(
+      repoRoot,
+      ["ls-files", "--others", "--exclude-standard", "-z", "--", ".", ...exclusions],
+      withoutIndexEnv(),
+      false,
+    )).split("\0").filter(Boolean);
 
-    // Seed the scratch index from the immutable baseline. Excluded tracked
-    // paths retain their baseline entries; included deletions are staged below.
+    // Seed from the immutable baseline. Excluded tracked paths remain at their
+    // baseline state; included deletions are staged by the explicit path list.
     await git(repoRoot, ["read-tree", baseline], env);
 
-    // File-level, literal pathspecs avoid both ignored exclusion pathspec errors
-    // and traversing excluded tracked/embedded content. The untracked listing
-    // also excludes these paths before returning candidates. A NUL-delimited file
-    // avoids argv limits and Git's glob/pathspec interpretation of filenames.
     const stage = async (paths: string[], force = false) => {
       if (paths.length === 0) return;
       const pathspecFile = join(tempRoot, "pathspecs");
-      writeFileSync(pathspecFile, `${paths.map((path) => `:(top,literal)${path}`).join("\0")}\0`);
-      await git(repoRoot, ["add", "-A", ...(force ? ["-f"] : []), `--pathspec-from-file=${pathspecFile}`, "--pathspec-file-nul"], env);
+      writeFileSync(
+        pathspecFile,
+        `${paths.map((path) => `:(top,literal)${path}`).join("\0")}\0`,
+      );
+      await git(
+        repoRoot,
+        [
+          "add",
+          "-A",
+          ...(force ? ["-f"] : []),
+          `--pathspec-from-file=${pathspecFile}`,
+          "--pathspec-file-nul",
+        ],
+        env,
+      );
     };
-    await stage([...new Set([...baselineFiles, ...untrackedFiles])]
-      .filter((path) => !isUnderPrefixes(path, prefixes)));
 
-    // Newly tracked real-index files aren't in the baseline or the untracked
-    // listing. Force-add only these explicit paths (including git add -f files);
-    // an index-only file since removed from disk is not part of the worktree.
-    await stage(realIndexFiles.filter((path) => !baselineFiles.has(path)
-      && !isUnderPrefixes(path, prefixes)
-      && lstatSync(join(repoRoot, path), { throwIfNoEntry: false })), true);
+    await stage(
+      [...new Set([...baselineFiles, ...untrackedFiles])]
+        .filter((path) => !isUnderPrefixes(path, prefixes)),
+    );
+
+    // Newly tracked real-index files are absent from both the baseline and the
+    // ordinary untracked listing. Force-add only explicit paths that still
+    // exist in the worktree and are outside excluded prefixes.
+    await stage(
+      realIndexFiles.filter(
+        (path) =>
+          !baselineFiles.has(path) &&
+          !isUnderPrefixes(path, prefixes) &&
+          lstatSync(join(repoRoot, path), { throwIfNoEntry: false }),
+      ),
+      true,
+    );
 
     const capturedTree = await git(repoRoot, ["write-tree"], env);
-
-    // The same baseline/tree pair and the same literal exclusions are used for
-    // both outputs.
-    const diffArgs = [
-      "diff",
-      "--binary",
-      "--full-index",
-      "--no-ext-diff",
-      "--no-textconv",
-      "--no-renames",
-      "--no-color",
-      "--src-prefix=a/",
-      "--dst-prefix=b/",
-      baseline,
-      capturedTree,
-    ];
-    const statArgs = [
-      "diff",
-      "--full-index",
-      "--no-ext-diff",
-      "--no-textconv",
-      "--no-renames",
-      "--no-color",
-      "--stat",
-      baseline,
-      capturedTree,
-    ];
-    if (exclusions.length > 0) {
-      diffArgs.push("--", ...exclusions);
-      statArgs.push("--", ...exclusions);
-    }
-
-    const diff = await git(repoRoot, diffArgs, env, false);
-    const diffStat = await git(repoRoot, statArgs, env, false);
-
-    return { diff, diffStat };
+    return { repoRoot, baseline, capturedTree, ignoredPrefixes: prefixes };
   } finally {
     removeWithRetry(tempRoot);
   }
+}
+
+/**
+ * Capture the current worktree as lossless Git evidence.
+ *
+ * Tree construction is delegated to `captureGitTree()`, the same primitive
+ * used by implementation-scope snapshots. Diff and stat are then derived from
+ * the exact same immutable baseline/captured-tree pair.
+ */
+export async function captureGitEvidence(
+  cwd: string,
+  ignoredPrefixes: string[] = [],
+  options: CaptureGitEvidenceOptions = {},
+): Promise<GitEvidence> {
+  const capture = await captureGitTree(cwd, ignoredPrefixes, options);
+  const exclusions = capture.ignoredPrefixes.map(exclusionPathspec);
+  const env = withoutIndexEnv();
+
+  const diffArgs = [
+    "diff",
+    "--binary",
+    "--full-index",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--no-renames",
+    "--no-color",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+    capture.baseline,
+    capture.capturedTree,
+  ];
+  const statArgs = [
+    "diff",
+    "--full-index",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--no-renames",
+    "--no-color",
+    "--stat",
+    capture.baseline,
+    capture.capturedTree,
+  ];
+  if (exclusions.length > 0) {
+    diffArgs.push("--", ...exclusions);
+    statArgs.push("--", ...exclusions);
+  }
+
+  const diff = await git(capture.repoRoot, diffArgs, env, false);
+  const diffStat = await git(capture.repoRoot, statArgs, env, false);
+  return { diff, diffStat };
 }

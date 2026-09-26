@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { captureGitTree } from "./git-evidence.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -53,32 +54,23 @@ export async function createWorkingTreeSnapshot(
   cwd: string,
   ignoredPrefixes: string[] = [],
 ): Promise<string> {
-  const tempRoot = mkdtempSync(join(tmpdir(), "pi-sf-index-"));
-  const indexPath = join(tempRoot, "index");
-  const env: NodeJS.ProcessEnv = {
-    ...snapshotIdentityEnv(),
-    GIT_INDEX_FILE: indexPath,
-  };
-
-  try {
-    await git(cwd, ["read-tree", "HEAD"], env);
-    const exclusions = ignoredPrefixes.map(normalizePath).filter(Boolean)
-      .map((prefix) => `:(top,literal,exclude)${prefix}`);
-    // Exclude during capture, not after staging: runtime artifacts may contain
-    // embedded repositories or failing filters. Keep tracked baseline entries.
-    await git(cwd, ["add", "-A", "--", ".", ...exclusions], env);
-
-    const tree = await git(cwd, ["write-tree"], env);
-    return await git(
-      cwd,
-      ["commit-tree", tree, "-p", "HEAD", "-m", "pi-software-factory parallel snapshot"],
-      env,
-    );
-  } finally {
-    rmSync(tempRoot, { recursive: true, force: true });
-  }
+  // Scope snapshots and source evidence must use the same safe staging
+  // primitive. In particular, never stage "." with an explicit excluded
+  // runtime prefix: Git rejects that form when the excluded prefix is ignored.
+  const capture = await captureGitTree(cwd, ignoredPrefixes);
+  return await git(
+    capture.repoRoot,
+    [
+      "commit-tree",
+      capture.capturedTree,
+      "-p",
+      capture.baseline,
+      "-m",
+      "pi-software-factory parallel snapshot",
+    ],
+    snapshotIdentityEnv(),
+  );
 }
-
 export async function createIsolatedWorktree(
   cwd: string,
   snapshotCommit: string,
