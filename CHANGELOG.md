@@ -1,7 +1,10 @@
 # Changelog
 
-## 0.8.0
+## 0.8.1
 
+- fix Git evidence capture when the configured runtime artifact directory is ignored by Git, while preserving capture-time exclusion of tracked and untracked runtime paths and real-index isolation
+
+## 0.8.0
 - add an offline deterministic Vitest regression suite and typecheck covering orchestration, Git evidence, controller routing, and scripted agent lifecycle/checkpoint/submission recovery
 - make agent/session construction injectable for deterministic regression tests without changing production model routing
 - capture complete review evidence for tracked, staged, unstaged, untracked, and binary changes without modifying the real index; exclude runtime artifacts literally
