@@ -3,10 +3,30 @@
  * SDK session construction, model calls, network access, or repository tools.
  *
  * The harness implements the runner's structural `AgentRunnerSession` seam and
- * records every factory request and session method call. Prompts are deferred:
- * `prompt()` returns a promise that stays pending until the test resolves the
- * turn, so tests can call the real submission tool closures (registered via
- * `AgentSessionFactoryRequest.customTools`) at exactly the moment they need.
+ * records every factory request and session method call.
+ *
+ * Scripted turns are bounded: the constructor requires the expected-turn bound
+ * declared by the scenario. The bound is a maximum — permitting N turns does not
+ * assert that all N turns occur; tests keep explicit assertions on the actual
+ * prompt count. A prompt beyond the bound fails immediately with a diagnostic
+ * and never allocates a pending turn.
+ *
+ * Run settlement is observed explicitly: `trackRun()` attaches both
+ * fulfillment and rejection handlers to the run promise the moment the run
+ * starts, recording the outcome in a pending/fulfilled/rejected discriminated
+ * observer. Prompt-entry barriers (`promptEntered`) terminate diagnostically if
+ * the observed run settles before the requested entry instead of hanging.
+ *
+ * `cleanup()` is idempotent and failure-safe: it first enters a terminal
+ * cleanup mode, then settles every entered pending turn and every recorded
+ * pending steer/abort call, keeps any prompt arriving during cleanup from
+ * becoming pending work, and finally awaits the observed run outcome. Cleanup
+ * handles run settlement (deadline, external abort, result) and prompt
+ * settlement independently — it never manufactures submissions and does not
+ * change normal cooperative cancellation semantics.
+ *
+ * Events flow through the real subscription the runner registers, using the
+ * real SDK `AgentSessionEvent` type; fixtures are structurally checked.
  */
 import type {
   AgentSessionEvent,
@@ -78,19 +98,103 @@ export class SettledCall {
   }
 }
 
+/** A single entered turn: its completion deferred plus a synchronous settlement flag. */
+interface TurnGate {
+  completion: Deferred<void>;
+  settled: boolean;
+}
+
 export type TurnSettleBehavior = "auto" | "manual";
 
+export type RunOutcomeState = "pending" | "fulfilled" | "rejected";
+
 /**
- * Events the agent runner reacts to. Emitted through the real subscription the
- * runner registers, so subscription/teardown behavior is exercised honestly.
+ * Discriminated settlement record for a run outcome. The observer promise
+ * always fulfills with one of these shapes, so consuming the outcome never
+ * requires a `catch` wrapper: a rejected run is data (`state: "rejected"`),
+ * not a promise rejection.
  */
-export type HarnessSessionEvent =
-  | { type: "message_update"; assistantMessageEvent: { type: "text_delta"; delta: string } | { type: string } }
-  | { type: "turn_end" }
-  | { type: "tool_execution_end" }
-  | { type: "message_end" }
-  | { type: "compaction_end" }
-  | (Record<string, unknown> & { type: string });
+export type RunResult<T> =
+  | { state: "fulfilled"; value: T }
+  | { state: "rejected"; error: unknown };
+
+/**
+ * Immediately observed, non-rejecting run-outcome observer. The tracked run's
+ * fulfillment and rejection handlers are attached at `trackRun` time, so a
+ * rejected run can never surface as an unhandled rejection. The observer
+ * promise always fulfills with a discriminated `RunResult`; `state`,
+ * `settled`, `value`, and `rejection` expose the same facts synchronously for
+ * lifecycle assertions.
+ */
+export class RunOutcome<T = unknown> {
+  readonly promise: Promise<RunResult<T>>;
+  #state: RunOutcomeState = "pending";
+  #value: T;
+  #error: unknown;
+  #resolve!: (result: RunResult<T>) => void;
+
+  constructor() {
+    this.#value = undefined as T;
+    this.#error = undefined;
+    this.promise = new Promise<RunResult<T>>((resolve) => {
+      this.#resolve = resolve;
+    });
+  }
+
+  fulfill(value: T): void {
+    if (this.#state !== "pending") return;
+    this.#state = "fulfilled";
+    this.#value = value;
+    this.#resolve({ state: "fulfilled", value });
+  }
+
+  reject(error?: unknown): void {
+    if (this.#state !== "pending") return;
+    this.#state = "rejected";
+    this.#error = error ?? new Error("harness: run rejected without an error value");
+    this.#resolve({ state: "rejected", error: this.#error });
+  }
+
+  get state(): RunOutcomeState {
+    return this.#state;
+  }
+
+  get settled(): boolean {
+    return this.#state !== "pending";
+  }
+
+  get value(): T {
+    if (this.#state !== "fulfilled") {
+      throw new Error(`harness: run outcome is ${this.#state}, not fulfilled`);
+    }
+    return this.#value;
+  }
+
+  get rejection(): unknown {
+    if (this.#state !== "rejected") {
+      throw new Error(`harness: run outcome is ${this.#state}, not rejected`);
+    }
+    return this.#error;
+  }
+}
+
+/**
+ * Narrow, documented callable contract for the runner's custom submission
+ * tools (`submit_result`, `submit_checkpoint`) as registered on
+ * `AgentSessionFactoryRequest.customTools`.
+ *
+ * The production request keeps its `any[]` API unchanged; the harness stores
+ * and invokes these closures through this boundary instead of `any` arrays.
+ * The runner's real closures accept two positional arguments — `(toolCallId,
+ * params)` — and that is the only surface the test seam consumes. This is not
+ * an attempt to construct an SDK ExtensionContext or assert an incomplete SDK
+ * tool object; the SDK's optional `signal`/`onUpdate` arguments are
+ * deliberately out of the contract.
+ */
+export interface HarnessSubmissionTool {
+  readonly name: string;
+  execute(toolCallId: string, params: unknown): Promise<unknown>;
+}
 
 export interface ScriptedAgentSessionOptions {
   stats?: SessionStats;
@@ -99,11 +203,19 @@ export interface ScriptedAgentSessionOptions {
   steerSettleBehavior?: TurnSettleBehavior;
   /** Default settlement behavior for abort() calls. */
   abortSettleBehavior?: TurnSettleBehavior;
+  /**
+   * The harness's run-outcome observer. When present, prompt-entry waits
+   * terminate diagnostically if the run settles before the requested entry.
+   */
+  runOutcome?: RunOutcome<unknown>;
 }
 
 /**
- * Scripted fake AgentRunnerSession. Turn completion is deferred; prompt entry,
- * steering, aborts, unsubscribe, and disposal are recorded.
+ * Scripted fake AgentRunnerSession with bounded turns. Turn completion is
+ * deferred; prompt entry, steering, aborts, unsubscribe, and disposal are
+ * recorded. A prompt beyond the expected-turn bound throws immediately without
+ * allocating a pending turn; in terminal cleanup mode prompts are recorded and
+ * settled immediately so they can never become pending work.
  */
 export class ScriptedAgentSession implements AgentRunnerSession {
   /** Prompt texts in the order they were received (1-based turn number = index + 1). */
@@ -112,6 +224,8 @@ export class ScriptedAgentSession implements AgentRunnerSession {
   readonly abortCalls: SettledCall[] = [];
   unsubscribeCalls = 0;
   disposeCalls = 0;
+  /** Maximum permitted scripted turns for this scenario. */
+  readonly expectedTurns: number;
   /** Mutable context usage surfaced via getContextUsage(); the runner re-reads it on each event. */
   contextUsage: ContextUsage | undefined;
   /** Fixed stats returned by getSessionStats(). */
@@ -120,15 +234,22 @@ export class ScriptedAgentSession implements AgentRunnerSession {
   abortSettleBehavior: TurnSettleBehavior;
 
   #listener: AgentSessionEventListener | undefined;
-  #tools: any[] = [];
-  #turnCompletions: (Deferred<void> | undefined)[] = [];
-  #turnEnterWaits: Array<{ turn: number; resolve: (text: string) => void }> = [];
+  #tools: HarnessSubmissionTool[] = [];
+  #turnGates: (TurnGate | undefined)[] = [];
+  #turnEnterWaits: Array<{ turn: number; resolve: (text: string) => void; reject: (error: unknown) => void }> = [];
+  #cleanupMode = false;
+  #runOutcome: RunOutcome<unknown> | undefined;
 
-  constructor(options: ScriptedAgentSessionOptions = {}) {
+  constructor(expectedTurns: number, options: ScriptedAgentSessionOptions = {}) {
+    if (!Number.isInteger(expectedTurns) || expectedTurns < 1) {
+      throw new Error(`harness: expectedTurns must be a positive integer, got ${String(expectedTurns)}`);
+    }
+    this.expectedTurns = expectedTurns;
     this.stats = options.stats ?? makeSessionStats();
     this.contextUsage = options.contextUsage;
     this.steerSettleBehavior = options.steerSettleBehavior ?? "auto";
     this.abortSettleBehavior = options.abortSettleBehavior ?? "auto";
+    this.#runOutcome = options.runOutcome;
   }
 
   subscribe(listener: AgentSessionEventListener): () => void {
@@ -140,28 +261,55 @@ export class ScriptedAgentSession implements AgentRunnerSession {
   }
 
   prompt(text: string): Promise<void> {
+    // The declared bound is enforced before any cleanup-mode branch: overflow
+    // is a scenario bug that must fail immediately even once cleanup has begun,
+    // so the observed run outcome captures the overflow rejection rather than
+    // silently recording unbounded prompts.
+    if (this.prompts.length >= this.expectedTurns) {
+      throw new Error(
+        `harness: prompt for turn ${this.prompts.length + 1} exceeds the expected-turn bound of ` +
+          `${this.expectedTurns}; the scenario must declare that turn at harness construction`,
+      );
+    }
+    // Terminal cleanup mode: record a permitted prompt but never make it
+    // pending, so prompts arriving during cleanup cannot leave unresolved work
+    // behind.
+    if (this.#cleanupMode) {
+      this.prompts.push(text);
+      this.#resolveEntryWaits(this.prompts.length, text);
+      return Promise.resolve();
+    }
     const index = this.prompts.length;
     this.prompts.push(text);
     const completion = deferred<void>();
-    this.#turnCompletions[index] = completion;
-    const waiters = this.#turnEnterWaits.filter((wait) => wait.turn === index + 1);
-    this.#turnEnterWaits = this.#turnEnterWaits.filter((wait) => wait.turn !== index + 1);
-    for (const wait of waiters) wait.resolve(text);
+    this.#turnGates[index] = { completion, settled: false };
+    this.#resolveEntryWaits(index + 1, text);
     return completion.promise;
   }
 
   steer(text: string): Promise<void> {
     const settled = new SettledCall();
     this.steerCalls.push({ text, settled });
-    if (this.steerSettleBehavior === "auto") settled.resolve();
+    // In terminal cleanup mode a continuation may record a fresh manual steer
+    // after beginCleanup() has already settled the calls it knew about; settle
+    // it immediately so it can never remain pending. Normal-mode behavior is
+    // unchanged.
+    if (this.steerSettleBehavior === "auto" || this.#cleanupMode) settled.resolve();
     return settled.promise;
   }
 
   abort(): Promise<void> {
     const settled = new SettledCall();
     this.abortCalls.push(settled);
-    if (this.abortSettleBehavior === "auto") settled.resolve();
+    if (this.abortSettleBehavior === "auto" || this.#cleanupMode) settled.resolve();
     return settled.promise;
+  }
+
+  /** Resolve any prompt-entry barriers waiting on the just-entered turn. */
+  #resolveEntryWaits(turn: number, text: string): void {
+    const waiters = this.#turnEnterWaits.filter((wait) => wait.turn === turn);
+    this.#turnEnterWaits = this.#turnEnterWaits.filter((wait) => wait.turn !== turn);
+    for (const wait of waiters) wait.resolve(text);
   }
 
   dispose(): void {
@@ -178,26 +326,101 @@ export class ScriptedAgentSession implements AgentRunnerSession {
 
   // --- test control surface -------------------------------------------------
 
-  /** Barrier: resolves with the prompt text as soon as the n-th (1-based) turn has been entered. */
+  get cleanupMode(): boolean {
+    return this.#cleanupMode;
+  }
+
+  /**
+   * Enter terminal cleanup mode. Idempotent. Mode is entered first so that a
+   * prompt arriving while the pending work is settled cannot become pending,
+   * then every entered pending turn and every recorded pending steer/abort call
+   * is settled. Settling a turn whose run already settled (e.g. a deadline
+   * raced the scripted prompt) is harmless: it never manufactures a
+   * submission and changes no normal abort semantics.
+   */
+  beginCleanup(): void {
+    if (this.#cleanupMode) return;
+    this.#cleanupMode = true;
+    for (const gate of this.#turnGates) {
+      if (gate && !gate.settled) {
+        gate.settled = true;
+        gate.completion.resolve();
+      }
+    }
+    for (const { settled } of this.steerCalls) settled.resolve();
+    for (const settled of this.abortCalls) settled.resolve();
+  }
+
+  /**
+   * Barrier: resolves with the prompt text as soon as the n-th (1-based) turn
+   * has been entered. Rejects for invalid turn indices (non-positive or beyond
+   * the expected-turn bound) and, when a run-outcome observer is attached,
+   * rejects diagnostically if the run settles before the requested entry.
+   */
   promptEntered(n: number): Promise<string> {
     const index = n - 1;
+    if (!Number.isInteger(n) || n < 1) {
+      return Promise.reject(new Error(`harness: invalid turn index ${String(n)}; turns are 1-based`));
+    }
+    if (n > this.expectedTurns) {
+      return Promise.reject(
+        new Error(`harness: turn index ${n} exceeds the expected-turn bound of ${this.expectedTurns}`),
+      );
+    }
     if (this.prompts.length > index) return Promise.resolve(this.prompts[index]);
-    return new Promise<string>((resolve) => this.#turnEnterWaits.push({ turn: n, resolve }));
+    const entry = deferred<string>();
+    this.#turnEnterWaits.push({ turn: n, resolve: entry.resolve, reject: entry.reject });
+    const outcome = this.#runOutcome;
+    if (!outcome) return entry.promise;
+    if (outcome.settled) {
+      return Promise.reject(
+        this.#runSettledBeforeEntryError(
+          n,
+          outcome,
+          outcome.state === "rejected" ? outcome.rejection : undefined,
+        ),
+      );
+    }
+    // The observer promise always fulfills with a discriminated outcome; a
+    // settled run (fulfilled or rejected) before entry rejects the barrier.
+    void outcome.promise.then((result) =>
+      entry.reject(
+        this.#runSettledBeforeEntryError(
+          n,
+          outcome,
+          result.state === "rejected" ? result.error : undefined,
+        ),
+      ),
+    );
+    return entry.promise;
   }
 
   /** Complete the n-th (1-based) deferred turn. */
   resolveTurn(n: number): void {
-    this.#completionFor(n).resolve();
+    const gate = this.#gateFor(n);
+    if (!gate.settled) {
+      gate.settled = true;
+      gate.completion.resolve();
+    }
   }
 
   /** Fail the n-th (1-based) deferred turn. */
   rejectTurn(n: number, error?: unknown): void {
-    this.#completionFor(n).reject(error);
+    const gate = this.#gateFor(n);
+    if (!gate.settled) {
+      gate.settled = true;
+      gate.completion.reject(error);
+    }
   }
 
   /** Resolves when the n-th (1-based) deferred turn has completed. */
   turnFinished(n: number): Promise<void> {
-    return this.#completionFor(n).promise;
+    return this.#gateFor(n).completion.promise;
+  }
+
+  /** Synchronously reports whether the n-th (1-based) turn has settled. */
+  turnSettled(n: number): boolean {
+    return this.#gateFor(n).settled;
   }
 
   /** Manually settle a previously recorded (1-based) steer call. */
@@ -216,27 +439,32 @@ export class ScriptedAgentSession implements AgentRunnerSession {
   }
 
   /** Emit a session event through the runner's live subscription. */
-  emit(event: HarnessSessionEvent): void {
+  emit(event: AgentSessionEvent): void {
     if (!this.#listener) {
       throw new Error("harness: no session listener registered; subscribe via runAgent first");
     }
-    this.#listener(event as unknown as AgentSessionEvent);
+    this.#listener(event);
   }
 
-  registerTools(tools: any[]): void {
+  /**
+   * Record the runner's custom submission tools through the typed harness
+   * boundary. The production `customTools` request field stays `any[]`;
+   * assigning it here is the single, documented seam crossing.
+   */
+  registerTools(tools: HarnessSubmissionTool[]): void {
     this.#tools = tools;
   }
 
   get registeredToolNames(): string[] {
-    return this.#tools.map((tool: any) => (tool && typeof tool.name === "string" ? tool.name : "<unnamed>"));
+    return this.#tools.map((tool) => tool.name);
   }
 
   /**
-   * Execute a tool registered on the factory request with the real closure.
+   * Execute a registered submission tool with its real two-argument closure.
    * Fails immediately for unknown tool names.
    */
   async callTool(name: string, params: unknown): Promise<unknown> {
-    const tool = this.#tools.find((t: any) => t && t.name === name);
+    const tool = this.#tools.find((t) => t.name === name);
     if (!tool) {
       throw new Error(
         `harness: unknown tool "${name}" (registered: ${this.registeredToolNames.join(", ") || "none"})`,
@@ -255,17 +483,25 @@ export class ScriptedAgentSession implements AgentRunnerSession {
     return this.callTool("submit_checkpoint", { checkpoint });
   }
 
-  #completionFor(n: number): Deferred<void> {
+  #gateFor(n: number): TurnGate {
     const index = n - 1;
-    const completion = this.#turnCompletions[index];
-    if (!completion) throw new Error(`harness: turn ${n} has not been entered yet`);
-    return completion;
+    const gate = this.#turnGates[index];
+    if (!gate) throw new Error(`harness: turn ${n} has not been entered yet`);
+    return gate;
   }
 
   #callFor<T>(calls: T[], n: number, kind: string): T {
     const call = calls[n - 1];
     if (!call) throw new Error(`harness: no recorded ${kind} call ${n}`);
     return call;
+  }
+
+  #runSettledBeforeEntryError(n: number, outcome: RunOutcome<unknown>, rejection?: unknown): Error {
+    const detail =
+      outcome.state === "rejected"
+        ? ` (rejected: ${String(rejection ?? outcome.rejection)})`
+        : " (fulfilled)";
+    return new Error(`harness: run settled before turn ${n} was entered${detail}`);
   }
 }
 
@@ -276,26 +512,84 @@ export interface AgentRunnerHarness {
   sessionFactory: AgentSessionFactory;
   /** Every factory request received, in order. */
   requests: AgentSessionFactoryRequest[];
+  /**
+   * Run-outcome observer for the run this harness drives. Both settlement
+   * handlers are attached at construction; `state` discriminates
+   * pending/fulfilled/rejected for lifecycle assertions.
+   */
+  runOutcome: RunOutcome<unknown>;
+  /**
+   * Attach the run promise for observation. Call synchronously at run start,
+   * before awaiting it, and at most once per harness.
+   */
+  trackRun(run: Promise<unknown>): void;
+  /** True once `cleanup()` has entered terminal cleanup mode. */
+  readonly cleaningUp: boolean;
+  /**
+   * Idempotent, failure-safe cleanup. Enters terminal cleanup mode first,
+   * settles every entered pending turn and every recorded pending steer/abort
+   * call (including a scripted turn left pending after the runner timed out),
+   * keeps prompts arriving during cleanup from becoming pending, and awaits
+   * the observed run outcome without rethrowing its rejection. Call
+   * unconditionally (e.g. in `finally`) after starting the run; repeated calls
+   * have no further effect.
+   */
+  cleanup(): Promise<void>;
 }
 
 /**
- * Create a fresh harness: one scripted session plus a recording factory.
- * Create one per test; the same session is reused across recovery prompts,
- * matching the runner's same-session recovery behavior.
+ * Create a fresh harness: one bounded scripted session plus a recording
+ * factory. The scenario-declared `expectedTurns` bound is required — it is the
+ * maximum number of prompts the runner may be allowed to issue. Create one
+ * harness per test and per run; the same session is reused across recovery
+ * prompts, matching the runner's same-session recovery behavior.
  */
-export function createAgentRunnerHarness(): AgentRunnerHarness {
-  const session = new ScriptedAgentSession();
+export function createAgentRunnerHarness(
+  expectedTurns: number,
+  options: ScriptedAgentSessionOptions = {},
+): AgentRunnerHarness {
+  const runOutcome = new RunOutcome<unknown>();
+  const session = new ScriptedAgentSession(expectedTurns, { ...options, runOutcome });
   const requests: AgentSessionFactoryRequest[] = [];
+  let tracked = false;
   const sessionFactory: AgentSessionFactory = (request) => {
     requests.push(request);
     session.registerTools(request.customTools);
     return session;
   };
-  return { session, sessionFactory, requests };
+  return {
+    session,
+    sessionFactory,
+    requests,
+    runOutcome,
+    trackRun(run: Promise<unknown>): void {
+      if (tracked) {
+        throw new Error("harness: a run is already tracked; create one harness per run");
+      }
+      tracked = true;
+      // Attach both settlement handlers immediately so the outcome can never
+      // escape as an unhandled rejection, tracked or not.
+      void run.then(
+        (value) => runOutcome.fulfill(value),
+        (error: unknown) => runOutcome.reject(error),
+      );
+    },
+    get cleaningUp(): boolean {
+      return session.cleanupMode;
+    },
+    async cleanup(): Promise<void> {
+      session.beginCleanup();
+      if (!tracked) return;
+      // The observer promise always fulfills with a discriminated outcome, so
+      // awaiting it observes run settlement without rethrowing a rejection.
+      await runOutcome.promise;
+    },
+  };
 }
 
 /** Harness pre-seeded with a fake model, plus the matching ModelRef and ModelRuntime. */
 export function createModelHarness(
+  expectedTurns: number,
   modelOverrides: Partial<ResolvedAgentModel> = {},
 ): {
   harness: AgentRunnerHarness;
@@ -305,7 +599,7 @@ export function createModelHarness(
 } {
   const model = makeFakeModel(modelOverrides);
   return {
-    harness: createAgentRunnerHarness(),
+    harness: createAgentRunnerHarness(expectedTurns),
     model,
     modelRef: makeModelRef(model),
     modelRuntime: makeFakeModelRuntime(model),
@@ -334,6 +628,38 @@ export function makeSessionStats(
   return Object.assign(stats, rest);
 }
 
+/** A minimal structurally valid `AgentMessage` for turn/message event fixtures. */
+function makeFixtureMessage(): Extract<AgentSessionEvent, { type: "turn_end" }>["message"] {
+  return { role: "user", content: "Fixture turn message", timestamp: 0 };
+}
+
+/** Minimal structurally complete `turn_end` AgentSessionEvent fixture. */
+export function makeTurnEndEvent(): AgentSessionEvent {
+  return {
+    type: "turn_end",
+    message: makeFixtureMessage(),
+    toolResults: [],
+  };
+}
+
+/** Minimal structurally complete `tool_execution_end` AgentSessionEvent fixture. */
+export function makeToolExecutionEndEvent(
+  overrides: Partial<Omit<Extract<AgentSessionEvent, { type: "tool_execution_end" }>, "type">> = {},
+): AgentSessionEvent {
+  return {
+    type: "tool_execution_end",
+    toolCallId: "fixture-tool-call",
+    toolName: "submit_result",
+    result: { content: [{ type: "text", text: "Fixture tool result" }], details: {} },
+    isError: false,
+    ...overrides,
+  };
+}
+
+/**
+ * Structurally checked fake model. Every required `Model` field is present and
+ * typed; no assertion is needed to build it.
+ */
 export function makeFakeModel(overrides: Partial<ResolvedAgentModel> = {}): ResolvedAgentModel {
   return {
     id: "fake-model",
@@ -347,20 +673,19 @@ export function makeFakeModel(overrides: Partial<ResolvedAgentModel> = {}): Reso
     contextWindow: 100_000,
     maxTokens: 8_192,
     ...overrides,
-  } as ResolvedAgentModel;
+  };
 }
 
 /**
  * Minimal ModelRuntime adapter. The only runtime behavior the agent runner
- * consumes is getModel(); the unavoidable ModelRuntime assertion is localized
- * here.
+ * consumes is getModel(); its implementation below is structurally checked
+ * against the SDK method signature, and the single unavoidable assertion is
+ * localized to the return statement.
  */
 export function makeFakeModelRuntime(model: ResolvedAgentModel = makeFakeModel()): ModelRuntime {
-  return {
-    getModel(providerId: string, modelId: string) {
-      return providerId === model.provider && modelId === model.id ? model : undefined;
-    },
-  } as unknown as ModelRuntime;
+  const getModel: ModelRuntime["getModel"] = (providerId: string, modelId: string) =>
+    providerId === model.provider && modelId === model.id ? model : undefined;
+  return { getModel } as unknown as ModelRuntime;
 }
 
 export function makeModelRef(model: ResolvedAgentModel = makeFakeModel()): ModelRef {
