@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.2
+
+- fix implementation-scope and parallel worktree snapshots when the configured runtime artifact prefix is ignored by Git by routing all scratch-index staging through the same explicit, literal-path capture primitive used for source evidence
+- add direct snapshot and controller regressions covering ignored runtime prefixes, required clean filters, real-index isolation, tracked deletions, and force-tracked ignored files
+
 ## 0.8.1
 
 - fix Git evidence capture when the configured runtime artifact directory is ignored by Git, while preserving capture-time exclusion of tracked and untracked runtime paths and real-index isolation
