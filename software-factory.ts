@@ -232,6 +232,9 @@ function renderTranscriptEntry(data: TranscriptEntry, expanded: boolean, theme: 
       details.push(`${theme.fg("muted", "Max context:")} ${stage.maxContextTokens.toLocaleString()}${window} tok`);
     }
     if (stage.compactions) details.push(`${theme.fg("muted", "Pi compactions:")} ${stage.compactions}`);
+    if (stage.submissionRecoveryAttempted) {
+      details.push(`${theme.fg("muted", "Submission recovery:")} attempted`);
+    }
     if (stage.error) details.push(theme.fg("error", `Error: ${stage.error}`));
     return details.join("\n");
   }
