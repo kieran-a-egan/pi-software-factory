@@ -1,5 +1,6 @@
 import { exec as execCallback } from "node:child_process";
 import { promisify } from "node:util";
+import { captureGitEvidence } from "./git-evidence.js";
 import type { VerificationResult } from "./types.js";
 
 const exec = promisify(execCallback);
@@ -55,14 +56,35 @@ export async function verify(
   }
 
   const status = await run("git status --short --untracked-files=all", cwd);
-  const stat = await run("git diff --stat", cwd);
-  const diff = await run("git diff --no-ext-diff", cwd);
+
+  let diff: string;
+  let diffStat: string;
+  try {
+    // The scratch-index helper includes untracked files, honors Git ignore
+    // rules, and applies the explicit prefix exclusions to both sides of the
+    // comparison. Successful output is preserved verbatim (no trimming).
+    const evidence = await captureGitEvidence(cwd, ignoredStatusPrefixes);
+    diff = evidence.diff;
+    diffStat = evidence.diffStat;
+  } catch (error) {
+    // A capture failure is reported as explicit diagnostics in the evidence
+    // fields. It never throws out of verify(), never changes checks/passed,
+    // and never falls back to tracked-only evidence.
+    const e = error as { stdout?: unknown; stderr?: unknown; message?: unknown } | null;
+    const details: string[] = [];
+    if (e?.stdout) details.push(String(e.stdout));
+    if (e?.stderr) details.push(String(e.stderr));
+    const message = e?.message ?? (error == null ? "unknown error" : String(error));
+    const diagnostic = [`git evidence capture failed: ${message}`, ...details].join("\n").trim();
+    diff = diagnostic;
+    diffStat = diagnostic;
+  }
 
   return {
     passed: checks.every((x) => x.passed),
     checks,
     gitStatus: filterStatus(status.output, ignoredStatusPrefixes),
-    diffStat: stat.output,
-    diff: diff.output,
+    diffStat,
+    diff,
   };
 }
