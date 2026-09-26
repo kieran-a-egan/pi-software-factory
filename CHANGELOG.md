@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.5
+
+- give scout, architect, reviewer, implementer, and repairer concrete structured `submit_result` schemas instead of leaving non-worker roles unconstrained
+- add one bounded same-session recovery turn when an agent finishes without calling `submit_result`
+- when a context checkpoint was requested, recovery requires exactly one `submit_result` or `submit_checkpoint` rather than continuing implementation
+- preserve the existing worker runtime deadline across the recovery turn
+- record whether structured-submission recovery was attempted in stage telemetry
+- fixes long scout/review/planning stages terminating the whole factory solely because the model ended without the required submission tool call
+
 ## 0.7.4
 
 - persist a run-level completion timestamp and report true wall-clock duration separately from cumulative stage work
