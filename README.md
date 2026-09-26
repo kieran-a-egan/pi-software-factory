@@ -1,15 +1,19 @@
 # Pi Software Factory
 
-A Pi package that runs a controlled software-engineering pipeline using:
+A controlled software-engineering pipeline for Pi Coding Agent.
 
-- **Jev** for bounded semantic classification and routing
-- **GPT-6 Astra** for architecture, planning, and independent review
-- **local Qwen3.8-27B** for repository scouting, implementation, and repair
+It combines:
+
+- **Jev** for bounded semantic routing
+- **GPT-6 Astra** for architecture and independent review
+- **local Qwen** for repository scouting, implementation, and repair
 - **deterministic tools** for Git/build/test/typecheck/lint truth
 
-Current version: **0.7.4**
+The controller owns the workflow. Models provide evidence and decisions within bounded roles; they do not arbitrarily choose what runs next.
 
-## Pipeline
+For release history, see [CHANGELOG.md](CHANGELOG.md).
+
+## How it works
 
 ```text
 /factory <objective>
@@ -27,7 +31,7 @@ Current version: **0.7.4**
    Jev plan gate
         │
         ▼
- Qwen implementer(s)           repo write/shell
+ Qwen implementer(s)           isolated/sequential writes
         │
         ▼
  Jev worker gate
@@ -47,221 +51,78 @@ Current version: **0.7.4**
         └── human/rework/replan
 ```
 
-The controller owns the state machine. Models do not arbitrarily select the next agent.
+### Core control properties
 
-## v0.7.4 changes
-
-v0.7.4 fixes concurrency observability. Earlier transcript summaries displayed the sum of all stage durations as though it were elapsed run time, which made truly concurrent workers look sequential. Runs now persist `completedAt`, report wall-clock duration separately, and calculate overlapping stage work from the recorded stage intervals. Final output and `/factory-status` show both wall time and cumulative stage work whenever concurrency occurred.
-
-## v0.7.3 changes
-
-v0.7.3 fixes lossless patch transport from disposable parallel worktrees back into the primary working tree. Git diff output is now retained byte-for-byte at the text-stream level instead of passing through `String.trim()`, which can remove a patch-significant trailing blank context line. Independent worker diffs are also kept as separate patch files: the controller first runs `git apply --check` over the whole batch, then applies the original patch files together rather than concatenating them into a synthetic patch document.
-
-## v0.7.2 changes
-
-v0.7.2 makes Jev's worker gate aware of execution mode. In an isolated parallel worktree, missing ignored caches/tooling such as `node_modules` is expected infrastructure isolation, and authoritative test/typecheck verification is explicitly deferred until the batch is integrated into the primary tree. Jev receives that routing context directly rather than inferring it from free-form worker notes. The normal confidence threshold is unchanged.
-
-## v0.7.1 changes
-
-v0.7.1 hardens the local-Qwen structured submission boundary. Implementation and repair workers now receive an explicit WorkerReport schema for `submit_result`, checkpoints receive an explicit WorkerCheckpoint schema, and JSON-encoded object strings are narrowly normalized before the existing strict validator runs. This prevents a completed local worker from being discarded solely because it serialized the report object as JSON text.
-
-## v0.7 changes
-
-v0.7 closes the remaining observability and scope-enforcement gaps.
-
-Every semantic routing decision is now retained in the in-memory/persisted run state as well as the append-only `decisions.jsonl` log. `/factory-status` shows decision history, planning recovery counts, context checkpoints, Jev worker continuations, parallel batches, and all currently active concurrent stages.
-
-Implementation-unit scope is now checked against Git truth in both execution modes. Parallel workers already captured isolated worktree diffs; v0.7 adds before/after ephemeral snapshots around sequential implementation units as well. The controller persists `implementation-scope-<unit>.json` with declared scope, worker-reported files, actual changed paths, and report omissions. Actual out-of-scope changes route to `HUMAN` even if the worker report did not disclose them.
-
-## v0.6 changes
-
-v0.6 adds conservative parallel execution for implementation units. The architect must declare an explicit `dependsOn` array and `filesExpected` scope for a unit to be considered for parallel execution. The controller only batches dependency-ready units whose file scopes do not overlap.
-
-Parallel workers never share the primary working tree. The controller creates an ephemeral Git snapshot of the current uncommitted project state, starts each worker in a disposable detached worktree, lets the existing Jev worker/continuation gates run there, then captures each accepted worktree as a patch. A batch is integrated into the primary tree only after every worker succeeds and the actual changed paths remain disjoint and inside the declared scopes. A failed worker cancels sibling Qwen sessions and leaves the primary tree untouched by that batch.
-
-Ignored dependency caches such as `node_modules` are intentionally not copied into isolated worktrees. Parallel-worker prompts therefore prohibit dependency installation and treat unavailable ignored tooling as non-authoritative; the normal deterministic verification stage still runs against the integrated primary tree.
-
-Default parallel settings:
-
-```text
-parallelImplementation.enabled:          true
-parallelImplementation.maxParallelUnits: 2
-```
-
-Units without explicit dependency/file-scope metadata continue sequentially.
-
-## v0.5 changes
-
-v0.5 adds bounded autonomous continuation after a Qwen worker submits evidence and Jev classifies that bounded assignment as `continue`.
-
-A continuation is not a context checkpoint. Context checkpoints resume the same in-progress worker because its live context is under pressure. A Jev continuation starts only after a complete worker report has been submitted and semantically classified as having concrete work remaining inside the same assignment. Continuations always use a fresh Qwen session, preserve the same unit/file scope, and are capped by `maxWorkerContinuationPasses` (default: 2). Exhaustion, low-confidence routing, `blocked`, or `invalid` still routes to human intervention.
-
-Continuation artifacts are persisted alongside the existing worker/gate history, and final/status transcript entries include the total continuation count.
-
-## v0.4 changes
-
-v0.4 keeps the v0.3 Qwen context-checkpoint mechanism and adds bounded planning recovery.
-
-When Jev returns `rescout`, Qwen performs a targeted read-only evidence pass, the evidence is merged, Astra revises the architecture, and the plan gate runs again. When Jev returns `replan`, Astra revises the plan against the existing evidence and the gate runs again. Both loops are bounded and fall back to human intervention when their configured limits are exhausted.
-
-Jev also returns bounded focus classifications so the recovery pass is directed at the most likely gap, such as dependencies, tests, interfaces, security, architecture, sequencing, or verification.
-
-Runtime artifacts are ordinary JSON/JSONL and now live under:
-
-```text
-.pi/software-factory/runs/SF-<timestamp>/
-```
-
-They no longer live under `.okf`. The optional `.okf/project` context path remains available only for genuine OKF project context. If an existing config still contains the exact legacy default `"runRoot": ".okf/work"`, v0.4+ transparently maps it to the new runtime location without moving or deleting historical runs.
-
-Worker stages also have a wall-clock watchdog. `workerMaxRuntimeMinutes` defaults to 20; if an implementation or repair session exceeds it, Pi aborts that subagent and the factory routes to `HUMAN` rather than running indefinitely. Implementation units are also treated as hard worker scope: when `filesExpected` is present, reported edits outside that set stop the run for review.
-
-Default planning-loop limits:
-
-```text
-maxRescoutPasses: 2
-maxReplanPasses:  2
-```
+- Deterministic verification is authoritative; semantic gates cannot turn a failing check into a pass.
+- Scout, architect, and reviewer are read-only.
+- Implementers and repairers may edit files and run shell commands, but prompts prohibit commits, pushes, resets, cleans, checkouts, and history rewriting.
+- The factory never commits or pushes for you.
+- A clean working tree is required by default.
+- Low-confidence Jev decisions stop for human review.
+- Planning recovery, worker continuation, repair, and context recovery are bounded by configuration.
+- Final acceptance requires deterministic verification, independent Astra review, and Jev acceptance.
 
 ## Requirements
 
-- Pi coding agent
+- Pi Coding Agent
 - Node.js 20+
 - Git
-- `TYPESAFE_API_KEY`
-- Astra available through Pi (default: `openai-codex/gpt-6-astra`)
-- local Qwen exposed through an OpenAI-compatible endpoint
+- a TypeSafe API key in `TYPESAFE_API_KEY`
+- Astra available through Pi
+- a local or remote Qwen model exposed through an OpenAI-compatible provider
 
-The included defaults match the development setup used for this package:
+The repository defaults target:
 
 ```text
-provider: unsloth-local
-model:    unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M
-endpoint: http://127.0.0.1:8888/v1
-context:  98,304 advertised tokens
+Qwen provider:  unsloth-local
+Qwen model:     unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M
+Qwen endpoint:  http://127.0.0.1:8888/v1
+Astra:          openai-codex/gpt-6-astra
 ```
 
-Project configuration can override all model references.
+See [models.qwen.example.json](models.qwen.example.json) for the local-model provider shape.
 
-## Install for development from a local Git repo
+## Installation
 
-Do not keep the package source under `~/.pi/agent/extensions`. Put it in a normal source directory and let Pi install it as a package.
+### Install a tagged release
 
-Example on PowerShell:
+```text
+pi install git:github.com/kieran-a-egan/pi-software-factory@v0.7.4
+```
+
+Pinned Git refs stay fixed until you explicitly update them.
+
+### Install a local development checkout
+
+Keep the source in a normal development directory rather than under Pi's global extension directory.
+
+PowerShell:
 
 ```powershell
-cd $HOME
-mkdir src -ErrorAction SilentlyContinue
-cd src
-
-# Extract/copy this package as:
-# C:\Users\<you>\src\pi-software-factory
-cd pi-software-factory
-
+cd "$HOME\src\pi-software-factory"
 npm install
-
-git init
-git branch -M main
-git add -A
-git commit -m "Software Factory v0.7.4"
-
 pi install (Get-Location).Path
 ```
 
-`pi install` records the local package path in Pi settings. Pi then loads resources according to the `pi` manifest in `package.json`.
+After editing the checkout, use `/reload` inside Pi.
 
-During development, edit this Git checkout, commit normally, and run `/reload` in Pi. There is no need to recopy the extension into the global extensions directory.
-
-### Remove the old manually copied extension
-
-If an earlier version exists at:
+If you previously copied the extension manually to:
 
 ```text
 ~/.pi/agent/extensions/software-factory/
 ```
 
-remove or move it before using the package install. Otherwise Pi may load two copies and both will register `/factory`.
+remove or move that copy first so Pi does not load two instances.
 
-PowerShell:
+## Configuration
 
-```powershell
-Remove-Item -Recurse -Force "$HOME\.pi\agent\extensions\software-factory"
-```
-
-Only do this after your package checkout is safely stored elsewhere.
-
-Verify the package install:
-
-```powershell
-pi list
-```
-
-Then start Pi and run:
+Project-specific configuration lives at:
 
 ```text
-/reload
+.pi/software-factory.json
 ```
 
-The package manifest points directly to `software-factory.ts`, so the extension resource is no longer the generic `src` entry.
-
-## Publish/install from Git later
-
-Once the repository has a remote, tag releases and install the Git source instead of the local path:
-
-```powershell
-git tag v0.7.4
-git push origin main --tags
-```
-
-Then, for example:
-
-```text
-pi install git:github.com/<owner>/pi-software-factory@v0.7.4
-```
-
-Pi can update unpinned Git package sources with its package update commands; pinned refs remain fixed until explicitly changed.
-
-## TypeSafe / Jev
-
-Set the key before launching Pi:
-
-```powershell
-$env:TYPESAFE_API_KEY = "..."
-```
-
-The extension uses `@typesafe-ai/sdk` and `TypeSafeClient.systemOne()`.
-
-Qwen workers report facts only. Jev owns semantic worker routing:
-
-```text
-ready | continue | blocked | invalid
-```
-
-Deterministic verification remains authoritative. Jev cannot convert a failing build/test/lint/typecheck into a pass.
-
-## Qwen model configuration
-
-If your `~/.pi/agent/models.json` already contains the working local model, keep it. `models.qwen.example.json` is only a reference.
-
-The factory defaults to:
-
-```json
-{
-  "qwen": {
-    "provider": "unsloth-local",
-    "model": "unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M",
-    "thinking": "medium"
-  }
-}
-```
-
-Override this per project in `.pi/software-factory.json` if necessary.
-
-## Project configuration
-
-Create `.pi/software-factory.json` in the target repository when you need overrides. See `software-factory.example.json`.
-
-Typical configuration:
+Start from [software-factory.example.json](software-factory.example.json). The built-in defaults include:
 
 ```json
 {
@@ -297,22 +158,44 @@ Typical configuration:
   },
   "runRoot": ".pi/software-factory/runs",
   "contextPaths": ["AGENTS.md", ".okf/project"],
-  "contextMaxBytes": 180000,
   "requireCleanWorkingTree": true,
-  "verificationCommands": [
-    "npm test",
-    "npm run typecheck"
-  ],
+  "verificationCommands": [],
   "maxRepairPasses": 1,
   "maxWorkerContinuationPasses": 2,
-  "workerMaxRuntimeMinutes": 20,
-  "maxDiffCharsForReview": 120000
+  "workerMaxRuntimeMinutes": 20
 }
 ```
 
-For projects where `.pi/software-factory.json` and `.pi/software-factory/runs/` are local-only, add them to `.git/info/exclude` or the repository's `.gitignore` as appropriate.
+Configure `verificationCommands` for the target repository, for example:
 
-## Commands
+```json
+{
+  "verificationCommands": [
+    "npm test",
+    "npm run typecheck"
+  ]
+}
+```
+
+If `.pi/software-factory.json` and `.pi/software-factory/runs/` are local-only for a project, ignore them using `.git/info/exclude` or the project's `.gitignore`.
+
+### TypeSafe / Jev
+
+Set the API key before launching Pi:
+
+```powershell
+$env:TYPESAFE_API_KEY = "..."
+```
+
+Worker routing dispositions are:
+
+```text
+ready | continue | blocked | invalid
+```
+
+A `continue` decision starts a fresh Qwen session for the same bounded assignment. It is different from a context-budget checkpoint, which resumes an in-progress worker after context pressure.
+
+## Running the factory
 
 Start a run:
 
@@ -320,74 +203,70 @@ Start a run:
 /factory Add organisation-level SSO using Microsoft Entra ID
 ```
 
-Redisplay the latest run from the current Pi session:
+Show the most recent run:
 
 ```text
 /factory-status
 ```
 
+The transcript shows stage progress, token usage, wall-clock duration, recovery activity, and concurrent-stage overlap.
+
+## Parallel implementation
+
+The architect declares each implementation unit's dependencies and expected file scope.
+
+The controller may run dependency-ready units concurrently when their declared scopes do not overlap. Each parallel worker runs in its own disposable Git worktree. The primary working tree is updated only after every worker in the batch:
+
+1. completes its bounded assignment,
+2. passes its Jev worker gate,
+3. stays within its deterministic Git scope, and
+4. produces a batch that passes patch preflight.
+
+Independent patches are then integrated together and the normal deterministic verification runs against the primary tree.
+
+Ignored caches such as `node_modules` are intentionally absent from disposable worktrees; authoritative project verification happens after integration.
+
+## Recovery and limits
+
+The factory uses bounded recovery rather than open-ended autonomous loops.
+
+- **Planning recovery:** Jev may request a targeted Qwen rescout or Astra replan.
+- **Worker continuation:** Jev may send the same bounded assignment to a fresh Qwen session when concrete work remains.
+- **Deterministic repair:** failed verification may trigger a bounded repair pass followed by re-verification.
+- **Context checkpoints:** long-running Qwen implementation/repair sessions can persist compact continuation state and resume in a fresh session.
+- **Worker watchdog:** implementation and repair sessions are aborted if they exceed the configured runtime limit.
+
+Exhausted limits or low-confidence routing stop at `HUMAN`.
+
 ## Run artifacts
 
-Each run is written under:
+Each run is stored under:
 
 ```text
 .pi/software-factory/runs/SF-<timestamp>/
 ```
 
-Artifacts include the stage-specific evidence and gates plus:
+Important top-level artifacts include:
 
 ```text
+state.json
 telemetry.json
 run-summary.json
-state.json
 decisions.jsonl
 ```
 
-`telemetry.json` contains stage-level data such as:
+The run directory also contains stage-specific evidence, plans, worker reports, gates, scope checks, continuation/checkpoint records, verification results, review output, and parallel-batch metadata.
 
-```json
-{
-  "stage": "qwen-implement",
-  "label": "division-tests",
-  "actor": "qwen",
-  "model": "unsloth-local/unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M",
-  "durationMs": 23142,
-  "outcome": "completed",
-  "tokens": {
-    "input": 18342,
-    "output": 2411,
-    "cacheRead": 0,
-    "cacheWrite": 0,
-    "total": 20753
-  }
-}
-```
+Runtime artifacts are ordinary JSON/JSONL. `.okf/project` remains an optional project-context source; it is not the runtime-state directory.
 
-Provider usage can be zero or incomplete if the configured OpenAI-compatible backend does not report streaming usage. The factory records Pi's authoritative session statistics rather than estimating provider tokens itself.
-
-## Safety/control properties
-
-- Scout, architect, and reviewer are read-only.
-- Qwen implementer/repairer can edit and execute shell commands.
-- Dependency-ready implementation units may run in isolated Git worktrees when explicit dependency/file scopes prove they are non-overlapping.
-- Parallel worktree patches are integrated only after all workers in the batch pass their bounded Jev gates and deterministic scope checks.
-- Sequential implementation units are also checked against deterministic before/after Git snapshots, so worker-reported file lists are not trusted as scope truth.
-- Worker prompts prohibit commit, push, reset, clean, checkout, and history rewriting.
-- The factory does not commit or push.
-- A clean working tree is required by default.
-- Low Jev confidence stops for human intervention.
-- Plan-gate `rescout`/`replan` requests run bounded recovery loops before implementation; review-stage `replan` still requires human intervention.
-- Deterministic checks are authoritative.
-- Final acceptance requires deterministic verification plus independent Astra review plus Jev acceptance.
-
-## Source layout
+## Repository layout
 
 ```text
 pi-software-factory/
-├── software-factory.ts       # named Pi extension entrypoint
-├── package.json              # Pi package manifest
-├── CHANGELOG.md
+├── software-factory.ts
+├── package.json
 ├── README.md
+├── CHANGELOG.md
 ├── software-factory.example.json
 ├── models.qwen.example.json
 └── src/
@@ -396,33 +275,25 @@ pi-software-factory/
     ├── context.ts
     ├── controller.ts
     ├── jev.ts
-    ├── prompts.ts
     ├── parallel.ts
+    ├── prompts.ts
     ├── storage.ts
     ├── types.ts
     ├── validate.ts
     └── verification.ts
 ```
 
+## Development
 
-## Transcript UI
+Use normal Git workflow in the source checkout. The package entry point is `software-factory.ts`.
 
-v0.7.4 continues the v0.2.2 transcript design and does not use Pi's dock widget. Factory progress is written as custom transcript entries, so it scrolls naturally with the conversation and is not clipped by terminal height. These entries are TUI/session state only and do not enter the LLM context. The currently executing stage is shown in Pi's one-line status bar.
+For a local development install:
 
-`/factory-status` appends the complete most-recent run summary, stage list, decision history, checkpoint/continuation history, and parallel-batch history to the transcript. While a run is active it also shows every currently active concurrent stage. Completed run state is recovered from persisted session entries after an extension reload.
-
-
-## Qwen context budget
-
-The implementation and repair workers are checkpointable. With the defaults:
-
-```text
-warningTokens:            65000
-checkpointTokens:         75000
-hardLimitTokens:          88000
-maxCheckpointsPerStage:       3
+```powershell
+npm install
+pi install (Get-Location).Path
 ```
 
-At the warning threshold the transcript records context pressure. At the checkpoint threshold the controller queues a checkpoint instruction. The worker either finishes normally with `submit_result`, or emits `submit_checkpoint`. A checkpoint is persisted as `checkpoint-<stage>-<n>.json`, the Pi session is disposed, and a fresh Qwen session resumes from that compact record plus the original implementation contract.
+Then edit, test, commit, and use `/reload` in Pi.
 
-Pi auto-compaction remains enabled as a safety net before the hard limit. It is not the primary continuity mechanism.
+Release-specific changes belong in [CHANGELOG.md](CHANGELOG.md), not in this README.
