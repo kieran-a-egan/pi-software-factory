@@ -41,7 +41,10 @@ import {
   selectParallelUnits,
   unexpectedReportedFiles,
 } from "./orchestration.js";
+import { evaluateWorkerGateConfidence } from "./worker-routing.js";
+import { evaluateFinalReview } from "./review-routing.js";
 import { createRunStore } from "./storage.js";
+import { reserveRun } from "./run-safety.js";
 import { stageTimingMetrics } from "./timing.js";
 import type {
   FactoryConfig,
@@ -135,6 +138,8 @@ function buildRunSummary(state: FactoryRunState) {
     completedAt,
     finalStatus: state.finalStatus,
     finalReason: state.finalReason,
+    reviewRouting: state.reviewRouting,
+    sourceDisposition: state.sourceDisposition,
     repairPasses: state.repairPasses,
     rescoutPasses: state.rescoutPasses,
     replanPasses: state.replanPasses,
@@ -187,6 +192,7 @@ export async function runFactory(
   objective: string,
   config: FactoryConfig,
   progress: ProgressFn,
+  abortSignal?: AbortSignal,
 ): Promise<FactoryRunState> {
   const resolvedRunRoot = resolveRunRoot(cwd, config);
   const runtimeStatusIgnores = repoRelativeRunRoot(cwd, resolvedRunRoot);
@@ -207,6 +213,9 @@ export async function runFactory(
     decisions: [],
     telemetry: [],
   };
+
+  let safety: Awaited<ReturnType<typeof reserveRun>> | undefined;
+  const retainedWorktrees: string[] = [];
 
   const setPhase = (phase: string) => {
     state.phase = phase;
@@ -229,12 +238,14 @@ export async function runFactory(
     operation: () => Promise<T>,
     extras?: (value: T) => TelemetryExtras,
   ): Promise<T> => {
+    abortSignal?.throwIfAborted();
     setPhase(meta.stage);
     progress({ type: "started", ...meta });
     const startedAt = new Date();
 
     try {
       const value = await operation();
+      abortSignal?.throwIfAborted();
       const endedAt = new Date();
       const telemetry: StageTelemetry = {
         ...meta,
@@ -265,10 +276,33 @@ export async function runFactory(
     }
   };
 
-  const finish = () => {
+  const finish = async () => {
+    if (safety) {
+      const source = await safety.conclude({
+        accepted: state.finalStatus === "accepted",
+        verifiedDiff: state.verification?.diff,
+        writerQuiescenceUncertain: !!abortSignal?.aborted || !!state.telemetry?.some((stage) =>
+          stage.outcome === "failed" && (stage.stage === "qwen-implement" || stage.stage === "qwen-repair")),
+      }, runtimeStatusIgnores, retainedWorktrees);
+      if (abortSignal?.aborted) {
+        source.disposition = "unknown-retained";
+        source.error = "Run cancelled; confirm all source-writing processes have stopped.";
+      }
+      state.sourceDisposition = source;
+      if (source.disposition === "unknown-retained" && state.finalStatus === "accepted") {
+        state.finalStatus = "human";
+        state.phase = "human";
+        state.finalReason = "Final review supported acceptance, but source safety requires human review.";
+      }
+      if (source.disposition === "retained-unaccepted" || source.disposition === "unknown-retained") {
+        state.finalReason = `${state.finalReason ?? "Run stopped."} Source is ${source.disposition}; inspect ${store.dir} and ${source.lockPath} before another run.${source.error ? ` ${source.error}` : ""}`;
+      }
+      store.write("source-disposition.json", { ...source, finalStatus: state.finalStatus, retainedWorktrees });
+    }
     state.completedAt ??= new Date().toISOString();
     store.write("run-summary.json", buildRunSummary(state));
     store.writeState(state);
+    if (state.sourceDisposition?.disposition === "unchanged" || state.sourceDisposition?.disposition === "accepted-in-place") safety?.release();
     return state;
   };
 
@@ -279,7 +313,15 @@ export async function runFactory(
     return finish();
   };
 
+  try {
   store.write("request.json", { objective, cwd, createdAt: state.createdAt });
+  try {
+    safety = await reserveRun(cwd, store);
+  } catch (error: any) {
+    return stop("blocked", error?.message ?? String(error));
+  }
+  state.sourceDisposition = safety.evidence;
+  await safety.begin(runtimeStatusIgnores);
 
   const beforeStatus = await runStage(
     { stage: "preflight", actor: "controller" },
@@ -288,6 +330,23 @@ export async function runFactory(
   store.write("preflight.json", { gitStatus: beforeStatus });
   if (config.requireCleanWorkingTree && beforeStatus.trim()) {
     return stop("blocked", "Working tree is not clean; factory is configured to require a clean tree.");
+  }
+
+  const baselineVerification = await runStage(
+    { stage: "baseline-verify", actor: "tools" },
+    () => verify(cwd, config.verificationCommands, runtimeStatusIgnores),
+  );
+  state.baselineVerification = baselineVerification;
+  store.write("baseline-verification.json", baselineVerification);
+  store.writeState(state);
+  if (!baselineVerification.passed) {
+    const failedCommands = baselineVerification.checks
+      .filter((check) => !check.passed)
+      .map((check) => check.command);
+    return stop(
+      "blocked",
+      `Repository baseline verification failed before implementation. Failed checks: ${failedCommands.join(", ")}`,
+    );
   }
 
   if (!process.env.TYPESAFE_API_KEY) {
@@ -338,7 +397,8 @@ export async function runFactory(
             contextBudget: config.contextBudget,
             validateCheckpoint: validateWorkerCheckpoint,
             maxRuntimeMs: config.workerMaxRuntimeMinutes * 60_000,
-            abortSignal: input.abortSignal,
+            abortSignal: input.abortSignal && abortSignal
+              ? AbortSignal.any([input.abortSignal, abortSignal]) : input.abortSignal ?? abortSignal,
             onContext: (level, usage) => {
               progress({
                 type: "context",
@@ -445,6 +505,13 @@ export async function runFactory(
       (value) => jevExtras(value, config.jev.model),
     );
 
+    const routing = evaluateWorkerGateConfidence({
+      phase: input.phase,
+      gate,
+      minChoiceConfidence: config.jev.minChoiceConfidence,
+      authoritativeVerificationAfterWorker: input.executionContext.authoritativeVerificationAfterWorker,
+    });
+
     state.workerGates ??= [];
     state.workerGates.push(gate);
     store.write(input.artifactName, gate);
@@ -454,9 +521,10 @@ export async function runFactory(
       label: input.label,
       at: new Date().toISOString(),
       decision: gate,
+      confidenceRouting: routing,
     });
 
-    if (gate.confidence < config.jev.minChoiceConfidence) {
+    if (routing.outcome === "human") {
       state.finalStatus = "human";
       state.finalReason = `Jev worker gate confidence is below threshold for ${input.label}: ${gate.confidence.toFixed(3)}.`;
       setPhase("human");
@@ -965,13 +1033,15 @@ export async function runFactory(
       });
     };
 
-    const parallelResults = await Promise.all(
+    const settledResults = await Promise.allSettled(
       parallelUnits.map(async (unit, index) => {
         const safeUnitId = unit.id.replace(/[^a-zA-Z0-9_.-]/g, "_");
         let worktree: Awaited<ReturnType<typeof createIsolatedWorktree>> | undefined;
+        let captured = false;
 
         try {
           worktree = await createIsolatedWorktree(cwd, snapshotCommit, unit.id);
+          store.write(`parallel-worktree-${parallelBatchIndex}-${safeUnitId}.json`, { ...worktree, snapshotCommit, disposition: "active-unaccepted" });
           const worker = await runBoundedWorkerAssignment({
             phase: "implementation",
             role: "implementer",
@@ -1006,6 +1076,8 @@ export async function runFactory(
           }
 
           const change = await captureWorktreeChange(worktree.dir, snapshotCommit);
+          store.write(`parallel-change-${parallelBatchIndex}-${safeUnitId}.json`, change);
+          captured = true;
           const unexpectedPaths = changedPathsOutsideExpected(
             change.changedPaths,
             unit.filesExpected,
@@ -1051,10 +1123,30 @@ export async function runFactory(
             cancelled: abortControllers[index].signal.aborted,
           };
         } finally {
-          if (worktree) await removeIsolatedWorktree(cwd, worktree);
+          if (worktree) {
+            // Never destroy the only copy of a failed/cancelled worker's edits.
+            // Successful captures are durable binary patches before cleanup.
+            if (captured) {
+              try {
+                await removeIsolatedWorktree(cwd, worktree);
+                store.write(`parallel-worktree-${parallelBatchIndex}-${safeUnitId}.json`, { ...worktree, snapshotCommit, disposition: "captured-and-removed", evidence: `parallel-change-${parallelBatchIndex}-${safeUnitId}.json` });
+              } catch (error) {
+                retainedWorktrees.push(worktree.dir);
+                throw error;
+              }
+            } else {
+              retainedWorktrees.push(worktree.dir);
+              store.write(`parallel-worktree-${parallelBatchIndex}-${safeUnitId}.json`, { ...worktree, snapshotCommit, disposition: "retained-unaccepted" });
+            }
+          }
         }
       }),
     );
+    // Wait for sibling cancellation/cleanup even when persistence itself fails.
+    const parallelResults = settledResults.map((result) => {
+      if (result.status === "rejected") throw result.reason;
+      return result.value;
+    });
 
     const failures = parallelResults.filter((result) => !result.ok);
     if (failures.length > 0) {
@@ -1305,15 +1397,20 @@ export async function runFactory(
     recordDecision({ stage: "review-gate", repairPass: state.repairPasses, at: new Date().toISOString(), decision: state.reviewGate });
   }
 
-  if (
-    state.reviewGate.action === "accept" &&
-    state.reviewGate.confidence >= config.jev.minChoiceConfidence &&
-    state.reviewGate.reviewSufficientProbability >= config.jev.minNoulProbability &&
-    verification.passed
-  ) {
+  state.reviewRouting = evaluateFinalReview({
+    gate: state.reviewGate,
+    review,
+    verificationPassed: verification.passed,
+    minChoiceConfidence: config.jev.minChoiceConfidence,
+    minNoulProbability: config.jev.minNoulProbability,
+  });
+  store.write("review-routing.json", state.reviewRouting);
+  recordDecision({ stage: "final-review-routing", at: new Date().toISOString(), routing: state.reviewRouting });
+
+  if (state.reviewRouting.outcome !== "human-fallback") {
     state.finalStatus = "accepted";
-    state.finalReason = "Deterministic checks passed and Jev accepted the independently reviewed change.";
-    setPhase("accepted");
+    state.finalReason = `Deterministic checks passed and Jev accepted the independently reviewed change (${state.reviewRouting.outcome}).`;
+    state.phase = "accepted"; // Persist acceptance only after the source safety check in finish().
   } else {
     state.finalStatus = "human";
     state.finalReason = `Final gate requires ${state.reviewGate.action}; confidence=${state.reviewGate.confidence.toFixed(3)}, reviewSufficient=${state.reviewGate.reviewSufficientProbability.toFixed(3)}, verificationPassed=${verification.passed}.`;
@@ -1321,4 +1418,8 @@ export async function runFactory(
   }
 
   return finish();
+  } catch (error: any) {
+    return stop(abortSignal?.aborted ? "human" : "failed",
+      abortSignal?.aborted ? "Factory run cancelled; source edits were not accepted." : `Factory run failed: ${error?.message ?? String(error)}`);
+  }
 }

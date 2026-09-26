@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { FactoryRunState } from "./types.js";
 
@@ -14,12 +14,13 @@ function safeStamp(): string {
 }
 
 export function createRunStore(root: string): RunStore {
-  const id = `SF-${safeStamp()}`;
-  const dir = join(root, id);
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(root, { recursive: true });
+  const dir = mkdtempSync(join(root, `SF-${safeStamp()}-`));
 
   const write = (name: string, value: unknown) => {
-    writeFileSync(join(dir, name), `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    const path = join(dir, name);
+    writeFileSync(`${path}.tmp`, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    renameSync(`${path}.tmp`, path);
   };
 
   return {

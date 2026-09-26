@@ -11,9 +11,15 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import type {
+  AgentSessionEventListener,
+  ContextUsage,
+  SessionStats,
+} from "@earendil-works/pi-coding-agent";
+import type {
   ContextBudgetConfig,
   ContextUsageSnapshot,
   ModelRef,
+  ThinkingLevel,
   TokenUsageSnapshot,
   WorkerCheckpoint,
 } from "./types.js";
@@ -41,6 +47,44 @@ export type CheckpointableAgentRunResult<T> =
   | { kind: "result"; result: T; metrics: AgentRunMetrics }
   | { kind: "checkpoint"; checkpoint: WorkerCheckpoint; context: ContextUsageSnapshot; metrics: AgentRunMetrics };
 
+/**
+ * Narrow structural session contract consumed by the agent runner. The real
+ * SDK `AgentSession` is structurally assignable to it; injected fakes only
+ * need to implement these members.
+ */
+export interface AgentRunnerSession {
+  subscribe(listener: AgentSessionEventListener): () => void;
+  prompt(text: string): Promise<void>;
+  steer(text: string): Promise<void>;
+  abort(): Promise<void>;
+  dispose(): void;
+  getSessionStats(): SessionStats;
+  getContextUsage?(): ContextUsage | undefined;
+}
+
+export type ResolvedAgentModel = NonNullable<ReturnType<ModelRuntime["getModel"]>>;
+
+/**
+ * Everything the default SDK setup needs, and nothing unrelated to creating a
+ * session. An injected factory receives this instead of the runner performing
+ * its settings/resource-dir/loader/session-manager/SDK-session setup.
+ */
+export interface AgentSessionFactoryRequest {
+  cwd: string;
+  model: ResolvedAgentModel;
+  modelRuntime: ModelRuntime;
+  thinkingLevel: ThinkingLevel;
+  systemPrompt: string;
+  tools: string[];
+  customTools: any[];
+  modelContextWindow?: number;
+  contextBudget?: ContextBudgetConfig;
+}
+
+export type AgentSessionFactory = (
+  request: AgentSessionFactoryRequest,
+) => AgentRunnerSession | Promise<AgentRunnerSession>;
+
 export interface RunAgentOptions<T> {
   role: AgentRole;
   cwd: string;
@@ -51,6 +95,7 @@ export interface RunAgentOptions<T> {
   tools: string[];
   validate: (value: unknown) => T;
   onText?: (delta: string) => void;
+  sessionFactory?: AgentSessionFactory;
 }
 
 export interface RunCheckpointableAgentOptions<T> extends RunAgentOptions<T> {
@@ -264,6 +309,34 @@ interface InternalRunOptions<T> extends RunAgentOptions<T> {
   abortSignal?: AbortSignal;
 }
 
+async function defaultSessionFactory(request: AgentSessionFactoryRequest): Promise<AgentRunnerSession> {
+  const settings = makeSettings(request.modelContextWindow, request.contextBudget);
+
+  // Point subagents at an empty resource directory so they do not recursively
+  // auto-load the software-factory package. Their tool cwd remains request.cwd.
+  const empty = resourceDir();
+  const loader = new DefaultResourceLoader({
+    cwd: empty,
+    agentDir: empty,
+    settingsManager: settings,
+    systemPromptOverride: () => request.systemPrompt,
+  });
+  await loader.reload();
+
+  const { session } = await createAgentSession({
+    cwd: request.cwd,
+    model: request.model,
+    modelRuntime: request.modelRuntime,
+    thinkingLevel: request.thinkingLevel,
+    tools: request.tools,
+    customTools: request.customTools,
+    resourceLoader: loader,
+    sessionManager: SessionManager.inMemory(request.cwd),
+    settingsManager: settings,
+  });
+  return session;
+}
+
 async function runInternal<T>(options: InternalRunOptions<T>): Promise<{
   submitted?: T;
   checkpoint?: WorkerCheckpoint;
@@ -328,29 +401,18 @@ async function runInternal<T>(options: InternalRunOptions<T>): Promise<{
       `${options.model.provider}/${options.model.model} contextWindow (${modelContextWindow}).`,
     );
   }
-  const settings = makeSettings(modelContextWindow, options.contextBudget);
 
-  // Point subagents at an empty resource directory so they do not recursively
-  // auto-load the software-factory package. Their tool cwd remains options.cwd.
-  const empty = resourceDir();
-  const loader = new DefaultResourceLoader({
-    cwd: empty,
-    agentDir: empty,
-    settingsManager: settings,
-    systemPromptOverride: () => options.systemPrompt,
-  });
-  await loader.reload();
-
-  const { session } = await createAgentSession({
+  const sessionFactory = options.sessionFactory ?? defaultSessionFactory;
+  const session = await sessionFactory({
     cwd: options.cwd,
     model,
     modelRuntime: options.modelRuntime,
     thinkingLevel: options.model.thinking,
+    systemPrompt: options.systemPrompt,
     tools: enabledTools,
     customTools,
-    resourceLoader: loader,
-    sessionManager: SessionManager.inMemory(options.cwd),
-    settingsManager: settings,
+    modelContextWindow,
+    contextBudget: options.contextBudget,
   });
 
   let maxContextTokens = 0;

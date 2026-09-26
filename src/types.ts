@@ -1,3 +1,6 @@
+import type { FinalReviewRoutingEvidence } from "./review-routing.js";
+import type { RunSafetyEvidence } from "./run-safety.js";
+
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface ModelRef {
@@ -274,9 +277,12 @@ export interface FactoryRunState {
   workerContinuations?: WorkerContinuationRecord[];
   parallelBatches?: ParallelBatchRecord[];
   decisions?: FactoryDecisionRecord[];
+  baselineVerification?: VerificationResult;
   verification?: VerificationResult;
   review?: ReviewResult;
   reviewGate?: ReviewGateDecision;
+  reviewRouting?: FinalReviewRoutingEvidence;
+  sourceDisposition?: RunSafetyEvidence;
   repairPasses: number;
   rescoutPasses: number;
   replanPasses: number;

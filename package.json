@@ -1,6 +1,6 @@
 {
   "name": "pi-software-factory",
-  "version": "0.7.5",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "description": "Pi package: Jev-routed software factory using Astra for architecture/review and local Qwen for repository work.",
@@ -13,7 +13,7 @@
   ],
   "license": "UNLICENSED",
   "engines": {
-    "node": ">=20"
+    "node": "^22.20.0 || >=24.12.0"
   },
   "scripts": {
     "test": "vitest run",
