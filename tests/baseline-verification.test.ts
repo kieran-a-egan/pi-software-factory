@@ -241,12 +241,9 @@ describe("runFactory baseline verification gate", () => {
 
     // The dirty runtime state beneath the prefix mixes tracked and untracked
     // changes: a whitespace-clean tracked modification of runtime.log plus
-    // untracked stray/run files. Staging the tracked change keeps
-    // `git diff --check` quiet for the fixture and exercises the `M  ` short
-    // status line form (the ` M ` leading-space form has a known status-trim
-    // quirk that this test must not confound).
+    // untracked stray/run files. The leading-space ` M ` status form must be
+    // excluded just as reliably as staged runtime artifacts.
     write(dir, ".pi/software-factory/runs/runtime.log", "run 2\n");
-    await g(dir, ["add", ".pi/software-factory/runs/runtime.log"]);
     write(dir, ".pi/software-factory/runs/aaa-seed.txt", "seed\n");
 
     const { state } = await runFactoryIn(dir, { verificationCommands: [PASS_CMD] });
@@ -290,13 +287,15 @@ describe("runFactory baseline verification gate", () => {
 
     // Selective, test-only injection: only the evidence capture rejects; the
     // real checks (including `git diff --check`) still run and pass.
+    const capture = gitEvidence.captureGitEvidence;
     const captureSpy = vi
       .spyOn(gitEvidence, "captureGitEvidence")
+      .mockImplementationOnce(capture) // initial safety journal, before baseline
       .mockRejectedValueOnce(new Error("injected evidence capture failure"));
 
     const { state, runDir } = await runFactoryIn(dir, { verificationCommands: [PASS_CMD] });
 
-    expect(captureSpy).toHaveBeenCalledTimes(1);
+    expect(captureSpy).toHaveBeenCalledTimes(3); // before, baseline, terminal safety evidence
     expect(state.finalStatus).toBe("blocked");
     expect(state.finalReason).toBe("TYPESAFE_API_KEY is not set.");
 
@@ -357,6 +356,9 @@ describe("runFactory baseline verification gate", () => {
         "preflight.json",
         "request.json",
         "run-summary.json",
+        "source-before.json",
+        "source-after.json",
+        "source-disposition.json",
         "state.json",
         "telemetry.json",
       ].sort(),

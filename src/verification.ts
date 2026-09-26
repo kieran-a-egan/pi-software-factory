@@ -1,9 +1,10 @@
-import { exec as execCallback } from "node:child_process";
+import { exec as execCallback, execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { captureGitEvidence } from "./git-evidence.js";
 import type { VerificationResult } from "./types.js";
 
 const exec = promisify(execCallback);
+const execFile = promisify(execFileCallback);
 
 async function run(command: string, cwd: string): Promise<{ passed: boolean; exitCode: number | null; output: string }> {
   try {
@@ -22,26 +23,17 @@ async function run(command: string, cwd: string): Promise<{ passed: boolean; exi
   }
 }
 
-function normalizePath(value: string): string {
-  return value.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/$/, "");
-}
-
-function filterStatus(output: string, ignoredPrefixes: string[]): string {
-  const prefixes = ignoredPrefixes.map(normalizePath).filter(Boolean);
-  if (prefixes.length === 0 || !output.trim()) return output.trim();
-
-  return output
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .filter((line) => {
-      const path = normalizePath(line.length > 3 ? line.slice(3).trim().replace(/^"|"$/g, "") : line.trim());
-      return !prefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
-    })
-    .join("\n");
-}
-
 export async function gitStatus(cwd: string, ignoredPrefixes: string[] = []): Promise<string> {
-  return filterStatus((await run("git status --short --untracked-files=all", cwd)).output, ignoredPrefixes);
+  const exclusions = ignoredPrefixes
+    .map((path) => path.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/$/, ""))
+    .filter(Boolean)
+    .map((path) => `:(top,literal,exclude)${path}`);
+  const { stdout } = await execFile("git", ["status", "--short", "--untracked-files=all", "--", ...exclusions], {
+    cwd, windowsHide: true, maxBuffer: 8 * 1024 * 1024,
+  });
+  // Let Git exclude paths before quoting/rename formatting; never parse human
+  // status lines or trim their significant leading index/worktree columns.
+  return stdout.trimEnd();
 }
 
 export async function verify(
@@ -55,7 +47,7 @@ export async function verify(
     checks.push({ command, ...result });
   }
 
-  const status = await run("git status --short --untracked-files=all", cwd);
+  const status = await gitStatus(cwd, ignoredStatusPrefixes).catch((error) => `git status failed: ${error.message}`);
 
   let diff: string;
   let diffStat: string;
@@ -83,7 +75,7 @@ export async function verify(
   return {
     passed: checks.every((x) => x.passed),
     checks,
-    gitStatus: filterStatus(status.output, ignoredStatusPrefixes),
+    gitStatus: status,
     diffStat,
     diff,
   };

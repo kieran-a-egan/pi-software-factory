@@ -62,18 +62,19 @@ For release history, see [CHANGELOG.md](CHANGELOG.md).
 - Deterministic verification is authoritative; semantic gates cannot turn a failing check into a pass.
 - Scout, architect, and reviewer are read-only.
 - Implementers and repairers may edit files and run shell commands, but prompts prohibit commits, pushes, resets, cleans, checkouts, and history rewriting.
-- The factory never commits or pushes for you.
+- The factory never commits to your branch or pushes for you. Existing isolated-worker snapshots create temporary Git objects without moving your branch.
+- A run-level source journal and exclusive interlock cover baseline checks, sequential writes, parallel integration, and repair. Unaccepted edits are retained for human disposition, never silently rolled back.
 - A clean working tree is required by default.
 - Before any model call or Jev intake, the configured deterministic checks run against the untouched repository as an authoritative baseline verification. It uses the same commands as later verification but establishes that the repository itself is healthy. A failing baseline check stops the run as blocked before any models run and before repair is ever attempted, and it does not require a `TYPESAFE_API_KEY` or any model to be available.
 - Post-implementation verification and repair are unchanged: they run after implementation and remain the gate for the delivered change, while the baseline gate only vets the starting repository.
 - Low-confidence Jev decisions stop for human review.
 - Planning recovery, worker continuation, repair, and context recovery are bounded by configuration.
-- Final acceptance requires deterministic verification, independent Astra review, and Jev acceptance.
+- Final acceptance requires deterministic verification, independent Astra review, and Jev acceptance. Normally both configured Jev thresholds must pass. Below-threshold review sufficiency is accepted only when action confidence still passes, residual risk is `low`, Astra's verdict is `clean`, and there are no major/critical findings. Original Jev scores and the selected routing policy are persisted; thresholds and prompts are unchanged.
 
 ## Requirements
 
 - Pi Coding Agent
-- Node.js 20+
+- Node.js 22.20+ (22.x), or 24.12+
 - Git
 - a TypeSafe API key in `TYPESAFE_API_KEY`
 - Astra available through Pi
@@ -246,12 +247,30 @@ The factory uses bounded recovery rather than open-ended autonomous loops.
 
 Exhausted limits or low-confidence routing stop at `HUMAN`.
 
+### Source disposition and interrupted runs
+
+Sequential workers and integrated parallel batches still edit the primary working tree. This is **in-place journaling with a human interlock, not automatic rollback or filesystem isolation**. Do not edit the repository concurrently with a run. Git evidence, not worker reports, determines the recorded source disposition:
+
+| Disposition | Meaning |
+| --- | --- |
+| `active-unaccepted` | Run in progress; no source changes are accepted yet. |
+| `accepted-in-place` | Final review accepted and the source still matches authoritative verification. Edits remain uncommitted. |
+| `unchanged` | A stopped run left the original source/index state unchanged. |
+| `retained-unaccepted` | HUMAN, FAILED, or BLOCKED left changes; all edits remain available for inspection. |
+| `unknown-retained` | Capture failed, HEAD changed, source changed after verification, or cancellation/worker failure requires confirmation that writers stopped. Nothing is discarded. |
+
+`source-before.json` and `source-after.json` contain complete Git worktree evidence (including untracked/binary content), staged patches, HEAD, and NUL-delimited status. Runtime paths are excluded. `source-disposition.json`, `state.json`, and the run summary record the disposition. Failed/cancelled parallel workers retain their worktrees; completed worker patches are persisted before cleanup. `parallel-worktree-*.json` records their locations and `parallel-change-*.json` preserves captured patches.
+
+The lock is `pi-software-factory.lock` inside the directory returned by `git rev-parse --absolute-git-dir`. It points to the run artifacts and blocks another factory run even with `requireCleanWorkingTree: false` or a different run root. It is released only after terminal evidence is persisted for accepted or unchanged runs. Process termination or persistence failure leaves the lock in place; there is no automatic stale-lock takeover.
+
+To recover, first confirm that the prior run and its child processes have stopped. Inspect the referenced artifacts, primary source/index, and any retained worktrees. Decide which edits to keep, commit, move, or discard using your own Git workflow; preserve any useful patches first. Only then manually remove that specific lock file. Retained worktrees can likewise be removed with your normal Git worktree workflow after inspection. Removing a lock does **not** approve or restore source, and the factory never commits, resets, or cleans your repository to recover.
+
 ## Run artifacts
 
 Each run is stored under:
 
 ```text
-.pi/software-factory/runs/SF-<timestamp>/
+.pi/software-factory/runs/SF-<timestamp>-<unique suffix>/
 ```
 
 Important top-level artifacts include:
@@ -260,6 +279,10 @@ Important top-level artifacts include:
 state.json
 telemetry.json
 baseline-verification.json
+review-routing.json
+source-before.json
+source-after.json
+source-disposition.json
 run-summary.json
 decisions.jsonl
 ```
@@ -300,7 +323,7 @@ Use normal Git workflow in the source checkout. The package entry point is `soft
 
 ### Developer verification
 
-Requires Node.js 20+ and npm.
+Requires Node.js 22.20+ (22.x), or 24.12+, and npm. These minimums match the locked Pi SDK/native dependencies; Node 20 is no longer supported.
 
 ```powershell
 npm ci
@@ -309,8 +332,9 @@ npm run typecheck
 ```
 
 - `npm ci` installs the exact dependency tree from `package-lock.json`.
-- `npm test` runs the regression suite with Vitest in non-watch mode. The tests are deterministic and offline after installation; they exercise pure orchestration/path/timing helpers and do not call models, the network, or Git.
+- `npm test` runs the regression suite with Vitest in non-watch mode. Tests are deterministic and offline after installation: pure routing/orchestration helpers, scripted agent sessions, and real Git/controller integration in disposable temporary repositories. They do not call models or the network.
 - `npm run typecheck` runs `tsc --noEmit` over the extension entry point, all application sources, test files, and the test configuration without emitting build artifacts.
+- GitHub Actions runs these commands after `npm ci` on Windows and Linux, with Node 22.20.0 and 24.12.0.
 
 For a local development install:
 

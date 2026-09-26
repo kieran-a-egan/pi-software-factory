@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased — 0.8.0
+
+- add an offline deterministic Vitest regression suite and typecheck covering orchestration, Git evidence, controller routing, and scripted agent lifecycle/checkpoint/submission recovery
+- make agent/session construction injectable for deterministic regression tests without changing production model routing
+- capture complete review evidence for tracked, staged, unstaged, untracked, and binary changes without modifying the real index; exclude runtime artifacts literally
+- defer low-confidence repair READY routing to authoritative verification without weakening Jev thresholds
+- verify the repository baseline before any model call; failed baseline checks block implementation and repair
+- extract pure final-review routing and accept below-threshold review sufficiency only with confident Jev acceptance, low residual risk, passing deterministic verification, a clean Astra verdict, and no major/critical findings; preserve original scores and explicit routing evidence
+- journal full-run source/index state with an exclusive per-checkout interlock; retain unaccepted edits after HUMAN/FAILED/BLOCKED/cancellation rather than resetting or cleaning the user's repository
+- persist failures and source disposition, reject acceptance of post-verification source changes, retain failed/cancelled parallel worktrees, and save completed worker patches before cleanup
+- prevent same-second run-artifact collisions and atomically replace JSON artifacts
+- fix runtime status exclusions for unstaged and quoted/spaced paths using literal Git pathspecs
+- add Windows/Linux CI using `npm ci`, `npm test`, and `npm run typecheck`; align supported Node versions with locked dependencies (22.20+ on 22.x, or 24.12+)
+
+Release preparation still required: promote this section to `0.8.0`, update the version in `package.json`, both root version entries in `package-lock.json`, and `VERSION` in `software-factory.ts`; update the README tagged-install example to `v0.8.0` when that tag is published. No tag or release has been created.
+
 ## 0.7.5
 
 - give scout, architect, reviewer, implementer, and repairer concrete structured `submit_result` schemas instead of leaving non-worker roles unconstrained

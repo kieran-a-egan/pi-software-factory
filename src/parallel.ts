@@ -62,13 +62,11 @@ export async function createWorkingTreeSnapshot(
 
   try {
     await git(cwd, ["read-tree", "HEAD"], env);
-    await git(cwd, ["add", "-A", "--", "."], env);
-
-    for (const rawPrefix of ignoredPrefixes) {
-      const prefix = normalizePath(rawPrefix);
-      if (!prefix) continue;
-      await git(cwd, ["rm", "-r", "--cached", "--ignore-unmatch", "--", prefix], env);
-    }
+    const exclusions = ignoredPrefixes.map(normalizePath).filter(Boolean)
+      .map((prefix) => `:(top,literal,exclude)${prefix}`);
+    // Exclude during capture, not after staging: runtime artifacts may contain
+    // embedded repositories or failing filters. Keep tracked baseline entries.
+    await git(cwd, ["add", "-A", "--", ".", ...exclusions], env);
 
     const tree = await git(cwd, ["write-tree"], env);
     return await git(
@@ -121,7 +119,9 @@ export async function captureWorktreeChange(
   const snapshotCommit = await createWorkingTreeSnapshot(worktreeDir, ignoredPrefixes);
   const changed = await git(
     worktreeDir,
-    ["diff", "--name-only", "--no-renames", baseSnapshotCommit, snapshotCommit],
+    ["diff", "--name-only", "-z", "--no-renames", baseSnapshotCommit, snapshotCommit],
+    undefined,
+    false,
   );
   const patch = await git(
     worktreeDir,
@@ -133,7 +133,7 @@ export async function captureWorktreeChange(
   return {
     snapshotCommit,
     changedPaths: changed
-      .split(/\r?\n/)
+      .split("\0")
       .map(normalizePath)
       .filter(Boolean),
     patch,
