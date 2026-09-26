@@ -96,7 +96,7 @@ See [models.qwen.example.json](models.qwen.example.json) for the local-model pro
 ### Install a tagged release
 
 ```text
-pi install git:github.com/kieran-a-egan/pi-software-factory@v0.7.5
+pi install git:github.com/kieran-a-egan/pi-software-factory@v0.8.0
 ```
 
 Pinned Git refs stay fixed until you explicitly update them.

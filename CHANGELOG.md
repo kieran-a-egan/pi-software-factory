@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — 0.8.0
+## 0.8.0
 
 - add an offline deterministic Vitest regression suite and typecheck covering orchestration, Git evidence, controller routing, and scripted agent lifecycle/checkpoint/submission recovery
 - make agent/session construction injectable for deterministic regression tests without changing production model routing
@@ -13,8 +13,6 @@
 - prevent same-second run-artifact collisions and atomically replace JSON artifacts
 - fix runtime status exclusions for unstaged and quoted/spaced paths using literal Git pathspecs
 - add Windows/Linux CI using `npm ci`, `npm test`, and `npm run typecheck`; align supported Node versions with locked dependencies (22.20+ on 22.x, or 24.12+)
-
-Release preparation still required: promote this section to `0.8.0`, update the version in `package.json`, both root version entries in `package-lock.json`, and `VERSION` in `software-factory.ts`; update the README tagged-install example to `v0.8.0` when that tag is published. No tag or release has been created.
 
 ## 0.7.5
 
