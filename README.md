@@ -19,6 +19,12 @@ For release history, see [CHANGELOG.md](CHANGELOG.md).
 /factory <objective>
         │
         ▼
+ clean-tree preflight          deterministic
+        │
+        ▼
+ baseline verification         authoritative, no API key
+        │
+        ▼
    Jev intake
         │
         ▼
@@ -58,6 +64,8 @@ For release history, see [CHANGELOG.md](CHANGELOG.md).
 - Implementers and repairers may edit files and run shell commands, but prompts prohibit commits, pushes, resets, cleans, checkouts, and history rewriting.
 - The factory never commits or pushes for you.
 - A clean working tree is required by default.
+- Before any model call or Jev intake, the configured deterministic checks run against the untouched repository as an authoritative baseline verification. It uses the same commands as later verification but establishes that the repository itself is healthy. A failing baseline check stops the run as blocked before any models run and before repair is ever attempted, and it does not require a `TYPESAFE_API_KEY` or any model to be available.
+- Post-implementation verification and repair are unchanged: they run after implementation and remain the gate for the delivered change, while the baseline gate only vets the starting repository.
 - Low-confidence Jev decisions stop for human review.
 - Planning recovery, worker continuation, repair, and context recovery are bounded by configuration.
 - Final acceptance requires deterministic verification, independent Astra review, and Jev acceptance.
@@ -251,9 +259,12 @@ Important top-level artifacts include:
 ```text
 state.json
 telemetry.json
+baseline-verification.json
 run-summary.json
 decisions.jsonl
 ```
+
+`baseline-verification.json` is written before any model runs. It contains the complete baseline result: the overall `passed` flag, every configured check with its command, exit code, and output, plus `gitStatus`, `diffStat`, and `diff` captured at that point. Baseline success or failure is decided solely by the `passed` result of the deterministic checks; the diagnostic fields (`gitStatus`, `diffStat`, `diff`) are evidence only and do not determine whether the baseline passed.
 
 The run directory also contains stage-specific evidence, plans, worker reports, gates, scope checks, continuation/checkpoint records, verification results, review output, and parallel-batch metadata.
 

@@ -291,6 +291,23 @@ export async function runFactory(
     return stop("blocked", "Working tree is not clean; factory is configured to require a clean tree.");
   }
 
+  const baselineVerification = await runStage(
+    { stage: "baseline-verify", actor: "tools" },
+    () => verify(cwd, config.verificationCommands, runtimeStatusIgnores),
+  );
+  state.baselineVerification = baselineVerification;
+  store.write("baseline-verification.json", baselineVerification);
+  store.writeState(state);
+  if (!baselineVerification.passed) {
+    const failedCommands = baselineVerification.checks
+      .filter((check) => !check.passed)
+      .map((check) => check.command);
+    return stop(
+      "blocked",
+      `Repository baseline verification failed before implementation. Failed checks: ${failedCommands.join(", ")}`,
+    );
+  }
+
   if (!process.env.TYPESAFE_API_KEY) {
     return stop("blocked", "TYPESAFE_API_KEY is not set.");
   }

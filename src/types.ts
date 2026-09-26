@@ -274,6 +274,7 @@ export interface FactoryRunState {
   workerContinuations?: WorkerContinuationRecord[];
   parallelBatches?: ParallelBatchRecord[];
   decisions?: FactoryDecisionRecord[];
+  baselineVerification?: VerificationResult;
   verification?: VerificationResult;
   review?: ReviewResult;
   reviewGate?: ReviewGateDecision;
