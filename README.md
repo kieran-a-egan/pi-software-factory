@@ -287,6 +287,20 @@ pi-software-factory/
 
 Use normal Git workflow in the source checkout. The package entry point is `software-factory.ts`.
 
+### Developer verification
+
+Requires Node.js 20+ and npm.
+
+```powershell
+npm ci
+npm test
+npm run typecheck
+```
+
+- `npm ci` installs the exact dependency tree from `package-lock.json`.
+- `npm test` runs the regression suite with Vitest in non-watch mode. The tests are deterministic and offline after installation; they exercise pure orchestration/path/timing helpers and do not call models, the network, or Git.
+- `npm run typecheck` runs `tsc --noEmit` over the extension entry point, all application sources, test files, and the test configuration without emitting build artifacts.
+
 For a local development install:
 
 ```powershell
