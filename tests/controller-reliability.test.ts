@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -84,24 +84,59 @@ beforeEach(async () => {
   });
 });
 
+async function removeFixtureWorktrees(repo: string) {
+  const list = await git(repo, "worktree", "list", "--porcelain", "-z");
+  for (const field of list.split("\0")) {
+    if (!field.startsWith("worktree ")) continue;
+    const dir = field.slice(9);
+    // These git-init fixtures have a .git directory; only linked worktrees
+    // have a .git file. Path spelling (including Windows aliases) is irrelevant.
+    if (!lstatSync(join(dir, ".git")).isFile()) continue;
+    await git(repo, "worktree", "remove", "--force", dir);
+    rmSync(join(dir, ".."), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+}
+
 afterEach(async () => {
   // Retained worktrees are intentional production evidence; tests own their repos.
-  if (cwd) {
-    const list = await git(cwd, "worktree", "list", "--porcelain");
-    for (const line of list.split("\n")) {
-      if (line.startsWith("worktree ") && line.slice(9).replace(/\\/g, "/") !== cwd.replace(/\\/g, "/")) {
-        const dir = line.slice(9);
-        await git(cwd, "worktree", "remove", "--force", dir);
-        rmSync(join(dir, ".."), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-      }
+  try {
+    if (cwd) {
+      await removeFixtureWorktrees(cwd);
+      rmSync(cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
-    rmSync(cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  } finally {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
   }
-  vi.restoreAllMocks();
-  vi.unstubAllEnvs();
 });
 
 describe("controller release reliability", () => {
+  it("cleanup preserves an aliased main checkout and removes dirty linked worktrees with spaced Unicode paths", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-sf-cleanup test-"));
+    const alias = join(root, "main alias");
+    const linkedRoot = join(root, "linked données 雪");
+    const linked = join(linkedRoot, "repo with spaces");
+    try {
+      symlinkSync(cwd, alias, process.platform === "win32" ? "junction" : "dir");
+      mkdirSync(linkedRoot);
+      await git(cwd, "worktree", "add", "--detach", linked, "HEAD");
+      writeFileSync(join(linked, "a.txt"), "retained edit\n");
+      writeFileSync(join(linked, "untracked.txt"), "retained untracked\n");
+
+      await removeFixtureWorktrees(alias);
+
+      expect(await git(alias, "rev-parse", "HEAD")).toBe(originalHead);
+      expect(readFileSync(join(cwd, "a.txt"), "utf8")).toBe("baseline a\n");
+      expect(existsSync(linkedRoot)).toBe(false);
+      expect((await git(alias, "worktree", "list", "--porcelain", "-z")).split("\0")
+        .filter((field) => field.startsWith("worktree "))).toHaveLength(1);
+    } finally {
+      // Also clean up if a regression prevents the helper from removing the link.
+      if (existsSync(linked)) await git(cwd, "worktree", "remove", "--force", linked);
+      rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    }
+  });
+
   it.each([0.57, 0.65])("persists original scores and explicit acceptance routing at %s", async (probability) => {
     gate.reviewSufficientProbability = probability;
     const state = await run();
