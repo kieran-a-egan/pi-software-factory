@@ -170,6 +170,58 @@ describe("captureGitEvidence", () => {
     expect(diffStat).not.toContain("runtime/server.js");
   });
 
+  it("captures real changes when an excluded runtime directory is Git-ignored", async () => {
+    const dir = tempDir();
+    await initRepo(dir);
+    write(dir, "src/app.js", "v1\n");
+    write(dir, ".pi/software-factory/runs/changed.txt", "before\n");
+    write(dir, ".pi/software-factory/runs/deleted.txt", "before\n");
+    await commitAll(dir, "baseline");
+
+    write(dir, ".gitignore", ".pi/software-factory/runs/\n");
+    await g(dir, ["add", ".gitignore"]);
+    await g(dir, ["commit", "-m", "ignore runs"]);
+    write(dir, "src/app.js", "v2\n");
+    write(dir, ".pi/software-factory/runs/changed.txt", "after\n");
+    rmSync(join(dir, ".pi/software-factory/runs/deleted.txt"));
+    write(dir, ".pi/software-factory/runs/untracked.txt", "runtime only\n");
+    const indexBefore = readFileSync(join(dir, ".git", "index"));
+
+    const { diff, diffStat } = await captureGitEvidence(dir, [".pi/software-factory/runs"]);
+
+    expect(diff).toContain("src/app.js");
+    expect(diff).toContain("+v2");
+    expect(diffStat).toContain("src/app.js");
+    expect(diff).not.toContain(".pi/software-factory/runs");
+    expect(diffStat).not.toContain(".pi/software-factory/runs");
+    expect(readFileSync(join(dir, ".git", "index"))).toEqual(indexBefore);
+  });
+
+  it("does not run clean filters on tracked files beneath a Git-ignored excluded prefix", async () => {
+    const dir = tempDir();
+    await initRepo(dir);
+    write(dir, ".gitignore", "runtime/\n");
+    write(dir, "runtime/tracked.txt", "before\n");
+    write(dir, "src/app.txt", "before\n");
+    await g(dir, ["add", ".gitignore", "src/app.txt"]);
+    await g(dir, ["add", "-f", "runtime/tracked.txt"]);
+    await g(dir, ["commit", "-m", "baseline"]);
+
+    write(dir, ".git/info/attributes", "runtime/tracked.txt filter=fail\n");
+    await g(dir, ["config", "filter.fail.clean", 'node -e "process.exit(1)"']);
+    await g(dir, ["config", "filter.fail.required", "true"]);
+    write(dir, "runtime/tracked.txt", "after\n");
+    write(dir, "src/app.txt", "after\n");
+
+    const { diff, diffStat } = await captureGitEvidence(dir, ["runtime"]);
+
+    expect(diff).toContain("src/app.txt");
+    expect(diff).toContain("+after");
+    expect(diffStat).toContain("src/app.txt");
+    expect(diff).not.toContain("runtime/");
+    expect(diffStat).not.toContain("runtime/");
+  });
+
   it("captures binary additions/changes losslessly and the patch re-applies byte-for-byte to a clean baseline", async () => {
     const dir = tempDir();
     await initRepo(dir);
@@ -255,6 +307,7 @@ describe("captureGitEvidence", () => {
 
     write(dir, "runtime[1]/a.txt", "bracket v2\n");
     write(dir, "runtime1/b.txt", "sibling v2\n");
+    write(dir, "runtime1/[draft] notes.txt", "literal untracked\n");
 
     const { diff, diffStat } = await captureGitEvidence(dir, ["runtime[1]"]);
 
@@ -266,6 +319,8 @@ describe("captureGitEvidence", () => {
     expect(diff).toContain("runtime1/b.txt");
     expect(diff).toContain("+sibling v2");
     expect(diffStat).toContain("runtime1/b.txt");
+    expect(diff).toContain("runtime1/[draft] notes.txt");
+    expect(diffStat).toContain("runtime1/[draft] notes.txt");
   });
 
   it("applies exclusions during capture so problematic excluded content cannot break it", async () => {
