@@ -15,13 +15,23 @@
   "engines": {
     "node": ">=20"
   },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
   "dependencies": {
     "@typesafe-ai/sdk": "^0.5.7"
   },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "typescript": "^5.9.2",
+    "vite": "^6.4.3",
+    "vitest": "^3.2.4"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
-    "typebox": "*",
-    "@earendil-works/pi-tui": "*"
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
   },
   "pi": {
     "extensions": [

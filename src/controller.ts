@@ -35,7 +35,14 @@ import {
   pathsOverlap,
   removeIsolatedWorktree,
 } from "./parallel.js";
+import {
+  implementationGraphIssue,
+  readyImplementationUnits,
+  selectParallelUnits,
+  unexpectedReportedFiles,
+} from "./orchestration.js";
 import { createRunStore } from "./storage.js";
+import { stageTimingMetrics } from "./timing.js";
 import type {
   FactoryConfig,
   FactoryDecisionRecord,
@@ -97,50 +104,6 @@ function agentExtras<T extends { metrics: AgentRunMetrics }>(run: T): TelemetryE
     compactions: run.metrics.compactions,
     checkpointRequested: run.metrics.checkpointRequested,
     submissionRecoveryAttempted: run.metrics.submissionRecoveryAttempted,
-  };
-}
-
-function stageTimingMetrics(stages: StageTelemetry[]) {
-  const intervals = stages
-    .map((stage) => ({
-      start: Date.parse(stage.startedAt),
-      end: Date.parse(stage.endedAt),
-      durationMs: stage.durationMs,
-    }))
-    .filter((interval) => Number.isFinite(interval.start) && Number.isFinite(interval.end) && interval.end >= interval.start)
-    .sort((a, b) => a.start - b.start);
-
-  const totalStageDurationMs = stages.reduce((sum, stage) => sum + stage.durationMs, 0);
-  if (intervals.length === 0) {
-    return {
-      totalStageDurationMs,
-      stageSpanMs: 0,
-      busyWallClockMs: 0,
-      overlappingStageDurationMs: 0,
-    };
-  }
-
-  let busyWallClockMs = 0;
-  let currentStart = intervals[0].start;
-  let currentEnd = intervals[0].end;
-
-  for (const interval of intervals.slice(1)) {
-    if (interval.start <= currentEnd) {
-      currentEnd = Math.max(currentEnd, interval.end);
-      continue;
-    }
-
-    busyWallClockMs += currentEnd - currentStart;
-    currentStart = interval.start;
-    currentEnd = interval.end;
-  }
-  busyWallClockMs += currentEnd - currentStart;
-
-  return {
-    totalStageDurationMs,
-    stageSpanMs: intervals.at(-1)!.end - intervals[0].start,
-    busyWallClockMs,
-    overlappingStageDurationMs: Math.max(0, totalStageDurationMs - busyWallClockMs),
   };
 }
 
@@ -217,88 +180,6 @@ function repoRelativeRunRoot(cwd: string, runRoot: string): string[] {
   const rel = relative(cwd, runRoot).replace(/\\/g, "/");
   if (!rel || rel === "." || rel.startsWith("../") || rel === "..") return [];
   return [rel];
-}
-
-function unexpectedReportedFiles(assignment: unknown, report: WorkerReport): string[] {
-  const filesExpected = (assignment as any)?.filesExpected;
-  if (!Array.isArray(filesExpected) || filesExpected.length === 0) return [];
-
-  const normalize = (value: string) => value.replace(/\\/g, "/").replace(/^\.\//, "");
-  const allowed = filesExpected.map((value: unknown) => normalize(String(value)));
-  return report.changedFiles
-    .map(normalize)
-    .filter((path) => !allowed.some((expected: string) => pathsOverlap(path, expected)));
-}
-
-
-function implementationGraphIssue(units: ImplementationUnit[]): string | undefined {
-  const ids = new Set<string>();
-  for (const unit of units) {
-    if (ids.has(unit.id)) return `duplicate implementation unit id: ${unit.id}`;
-    ids.add(unit.id);
-  }
-
-  for (const unit of units) {
-    for (const dependency of unit.dependsOn ?? []) {
-      if (!ids.has(dependency)) {
-        return `implementation unit ${unit.id} depends on unknown unit ${dependency}`;
-      }
-    }
-  }
-
-  const remaining = new Set(units.map((unit) => unit.id));
-  const resolved = new Set<string>();
-  while (remaining.size > 0) {
-    const ready = units.filter(
-      (unit) =>
-        remaining.has(unit.id) &&
-        (unit.dependsOn ?? []).every((dependency) => resolved.has(dependency)),
-    );
-    if (ready.length === 0) {
-      return `implementation dependency graph contains a cycle involving: ${[...remaining].join(", ")}`;
-    }
-    for (const unit of ready) {
-      remaining.delete(unit.id);
-      resolved.add(unit.id);
-    }
-  }
-
-  return undefined;
-}
-
-function readyImplementationUnits(
-  units: ImplementationUnit[],
-  pending: Set<string>,
-  completed: Set<string>,
-): ImplementationUnit[] {
-  return units.filter(
-    (unit) =>
-      pending.has(unit.id) &&
-      (unit.dependsOn ?? []).every((dependency) => completed.has(dependency)),
-  );
-}
-
-function selectParallelUnits(
-  ready: ImplementationUnit[],
-  maxParallelUnits: number,
-): ImplementationUnit[] {
-  const selected: ImplementationUnit[] = [];
-
-  for (const unit of ready) {
-    if (!unit.filesExpected?.length || !Array.isArray(unit.dependsOn)) continue;
-
-    const overlaps = selected.some((other) =>
-      unit.filesExpected!.some((path) =>
-        other.filesExpected!.some((otherPath) => pathsOverlap(path, otherPath)),
-      ),
-    );
-    if (overlaps) continue;
-
-    selected.push(unit);
-    if (selected.length >= maxParallelUnits) break;
-  }
-
-  return selected;
 }
 
 export async function runFactory(

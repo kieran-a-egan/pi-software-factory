@@ -1,4 +1,5 @@
 import { choice, noul, TypeSafeClient } from "@typesafe-ai/sdk";
+import type { EntryType } from "@typesafe-ai/sdk";
 import type {
   ArchitectureResult,
   FactoryConfig,
@@ -18,6 +19,13 @@ export class JevDecisionEngine {
 
   constructor(private readonly config: FactoryConfig) {
     this.client = new TypeSafeClient({ defaultModel: config.jev.model });
+  }
+
+  // The state payloads passed to systemOne are JSON-serializable at every call
+  // site, but interface-typed values (and the deliberately-untyped worker
+  // assignment) do not satisfy the SDK's EntryType index signature statically.
+  private asJsonState(value: unknown): EntryType {
+    return value as EntryType;
   }
 
   async classifyIntake(objective: string): Promise<IntakeDecision> {
@@ -66,7 +74,7 @@ export class JevDecisionEngine {
     architecture: ArchitectureResult;
   }): Promise<PlanGateDecision> {
     const response = await this.client.systemOne({
-      state: input,
+      state: this.asJsonState(input),
       questions: {
         action: choice("What should the software factory do next with this implementation plan?", {
           proceed: "The plan is sufficiently grounded and bounded for implementation",
@@ -131,7 +139,7 @@ export class JevDecisionEngine {
     };
 
     const response = await this.client.systemOne({
-      state,
+      state: this.asJsonState(state),
       questions: {
         disposition: choice(
           "Classify this worker report for workflow routing. The assignment object defines the worker's bounded scope and executionContext is authoritative routing metadata. Judge whether this assignment is complete enough to leave this worker and continue factory orchestration. Do not require work that belongs to a later implementation unit, and do not judge final software correctness because deterministic verification and independent review still follow. When executionContext.executionMode is isolated-parallel-worktree and authoritativeVerificationAfterWorker is true, inability to run repository test/typecheck commands solely because ignored dependency caches or tooling are absent is expected infrastructure isolation, not remaining assignment work and not a blocker. In that mode, use the worker's bounded implementation evidence, available local checks, blockers, and remainingWork to route the unit; authoritative project verification occurs only after successful batch integration.",
@@ -169,7 +177,7 @@ export class JevDecisionEngine {
     };
 
     const response = await this.client.systemOne({
-      state,
+      state: this.asJsonState(state),
       questions: {
         action: choice("Given the independent review and deterministic verification, what should happen next? Treat the review verdict and explicit acceptance criteria as primary routing evidence.", {
           accept: "Deterministic verification passed and the review identifies no unmet explicit acceptance criterion or material issue that should be fixed before acceptance. Non-blocking info/minor observations may remain.",
