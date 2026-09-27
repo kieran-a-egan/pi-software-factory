@@ -43,6 +43,7 @@ import {
 } from "./orchestration.js";
 import { evaluateWorkerGateConfidence } from "./worker-routing.js";
 import { evaluateFinalReview } from "./review-routing.js";
+import { selectImplementationEvidence } from "./implementation-evidence.js";
 import { createRunStore } from "./storage.js";
 import { reserveRun } from "./run-safety.js";
 import { stageTimingMetrics } from "./timing.js";
@@ -908,6 +909,13 @@ export async function runFactory(
             : "deferred",
       }));
 
+    const repositoryEvidence = selectImplementationEvidence(state.scout!, unit);
+    const safeUnitId = unit.id.replace(/[^a-zA-Z0-9_.-]/g, "_");
+    store.write(`implementation-context-${safeUnitId}.json`, {
+      unitId: unit.id,
+      repositoryEvidence,
+    });
+
     return implementerPrompt({
       executionMode,
       projectContext,
@@ -915,6 +923,7 @@ export async function runFactory(
       architecturalDecisions: state.architecture!.architecturalDecisions,
       currentUnit: unit,
       otherUnits,
+      repositoryEvidence,
     });
   };
 

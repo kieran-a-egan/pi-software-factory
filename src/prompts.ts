@@ -72,7 +72,15 @@ export function architectPrompt(input: unknown): string {
 }
 
 export function implementerPrompt(input: unknown): string {
-  return `Execute ONLY the currentUnit in this factory input:\n${JSON.stringify(input, null, 2)}\n\nThe overall feature has already been decomposed by the architect. otherUnits are explicitly outside this worker's scope. Do not perform their work early. If currentUnit.filesExpected is present, do not edit files outside that list.
+  const hasRepositoryEvidence =
+    input !== null &&
+    typeof input === "object" &&
+    "repositoryEvidence" in input &&
+    (input as { repositoryEvidence?: unknown }).repositoryEvidence !== undefined;
+  const evidenceGuidance = hasRepositoryEvidence
+    ? `The factory input above includes "repositoryEvidence": scout evidence selected for this unit. Use it as a starting map to avoid repeating broad repository discovery: begin from the listed files and symbols, and follow only the direct dependencies needed for the assigned unit. The evidence is point-in-time read context, not the source of truth — inspect the current files before relying on it, because the current repository state is authoritative. Evidence entries never authorize editing outside currentUnit.filesExpected, never expand the unit's scope, and never assign work from other units.\n\n`
+    : "";
+  return `Execute ONLY the currentUnit in this factory input:\n${JSON.stringify(input, null, 2)}\n\n${evidenceGuidance}The overall feature has already been decomposed by the architect. otherUnits are explicitly outside this worker's scope. Do not perform their work early. If currentUnit.filesExpected is present, do not edit files outside that list.
 If executionMode is "isolated-parallel-worktree", do not install missing dependencies or treat absent ignored caches as a product blocker. Run only checks that are already available in that isolated worktree; the controller will run authoritative verification after integration.\n\nSubmit evidence using exactly this shape (there is intentionally no status field):\n{
   "unitId": string,
   "summary": string,
