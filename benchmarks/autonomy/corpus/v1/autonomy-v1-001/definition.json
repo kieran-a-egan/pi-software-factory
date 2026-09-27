@@ -1,0 +1,14 @@
+{
+  "id": "autonomy-v1-001",
+  "schemaVersion": "v1",
+  "kind": "solvable",
+  "category": "bug-fix",
+  "objective": "Modify fixture/index.ts so that the exported function mean(values: readonly number[]): number returns 0 for an empty array instead of NaN, while preserving the exact arithmetic mean for nonempty arrays (for example mean([2,4]) === 3, mean([-2,2]) === 0, and mean([5]) === 5). Do not change the exported signature of mean.",
+  "expectedTerminalOutcome": "ACCEPTED",
+  "humanImplementationInterventionAllowed": false,
+  "assertionIdentifiers": [
+    "empty-mean",
+    "existing-mean",
+    "fixture-typecheck"
+  ]
+}

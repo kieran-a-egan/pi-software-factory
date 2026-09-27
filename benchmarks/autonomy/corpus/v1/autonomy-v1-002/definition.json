@@ -1,0 +1,14 @@
+{
+  "id": "autonomy-v1-002",
+  "schemaVersion": "v1",
+  "kind": "solvable",
+  "category": "additive-feature",
+  "objective": "Modify fixture/index.ts so that the exported function parseBoolean(value: string): boolean | undefined additionally recognizes the exact lowercase tokens 'yes' (returning true) and 'no' (returning false), while preserving the existing exact-case-sensitive, no-trimming behavior: 'true' returns true, 'false' returns false, and every other string (including 'yes'/'no' variants with different casing or surrounding whitespace, and any unsupported string) still returns undefined. Do not change the exported signature of parseBoolean.",
+  "expectedTerminalOutcome": "ACCEPTED",
+  "humanImplementationInterventionAllowed": false,
+  "assertionIdentifiers": [
+    "boolean-aliases",
+    "existing-boolean-tokens",
+    "fixture-typecheck"
+  ]
+}
