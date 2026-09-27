@@ -18,7 +18,8 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "bench:score-case": "node --import tsx benchmarks/autonomy/score-case-cli.ts"
+    "bench:score-case": "node --import tsx benchmarks/autonomy/score-case-cli.ts",
+    "bench:score-aggregate": "node --import tsx benchmarks/autonomy/score-aggregate-cli.ts"
   },
   "dependencies": {
     "@typesafe-ai/sdk": "^0.5.7"
