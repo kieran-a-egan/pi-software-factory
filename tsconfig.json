@@ -13,6 +13,7 @@
   "include": [
     "software-factory.ts",
     "src/**/*.ts",
+    "benchmarks/**/*.ts",
     "tests/**/*.ts",
     "vitest.config.ts"
   ]
