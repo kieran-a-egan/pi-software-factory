@@ -1,8 +1,9 @@
 # Autonomy benchmark corpus — v1
 
 This directory is a plain, frozen corpus of tiny solvable TypeScript benchmark
-cases. **This tranche contains exactly two cases: `autonomy-v1-001` and
-`autonomy-v1-002`.** No other cases, shared runners, or helpers live here.
+cases. **This tranche contains exactly three cases: `autonomy-v1-001`,
+`autonomy-v1-002`, and `autonomy-v1-003`.** No other cases, shared runners,
+or helpers live here.
 
 ## Layout
 
@@ -27,7 +28,7 @@ tranche.
 `definition.json` holds only the required `BenchmarkCaseDefinition` fields
 (`id`, `schemaVersion`, `kind`, `category`, `objective`,
 `expectedTerminalOutcome`, `humanImplementationInterventionAllowed`, and
-`assertionIdentifiers`). Both cases use `schemaVersion: "v1"`, `kind:
+`assertionIdentifiers`). All cases use `schemaVersion: "v1"`, `kind:
 "solvable"`, `expectedTerminalOutcome: "ACCEPTED"`, and
 `humanImplementationInterventionAllowed: false`.
 
@@ -41,6 +42,10 @@ The directory name equals the definition's `id`.
 - `autonomy-v1-002` — additive parser feature: `parseBoolean` initially
   recognizes only `'true'`/`'false'`; add the exact `'yes'`/`'no'` aliases while
   preserving existing tokens, case-sensitivity, and no trimming.
+- `autonomy-v1-003` — boundary bug: `parsePort("0")` currently returns `0`
+  instead of `undefined`; the fix must reject `'0'` while preserving valid
+  decimal ports up to `'65535'`, strict digit-only parsing, and rejection of
+  out-of-range, negative, fractional, whitespace, and nonnumeric inputs.
 
 ## Assertions and manual invocation
 

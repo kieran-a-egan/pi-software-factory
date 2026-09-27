@@ -3,8 +3,8 @@
  * (benchmarks/autonomy/corpus/v1/).
  *
  * The corpus is a plain, frozen set of tiny solvable cases. This suite
- * exercises only the repository-safe, read-only concerns for the two cases in
- * this tranche:
+ * exercises only the repository-safe, read-only concerns for the three cases
+ * in this tranche:
  *
  * - each committed definition.json loads through node:fs + JSON.parse,
  *   validates under validateBenchmarkCaseDefinition, and the validated object
@@ -12,7 +12,7 @@
  * - the expected stable IDs are present, distinct, and carry the documented
  *   schema/kind/outcome/intervention policy;
  * - each validated ID maps to its directory, whose definition.json, assert.ts,
- *   and all three fixture files exist, and the v1 root holds exactly the two
+ *   and all three fixture files exist, and the v1 root holds exactly the three
  *   expected case directories;
  * - directly imported pristine fixture exports exhibit the documented
  *   pre-task defects/missing aliases plus the important existing behavior.
@@ -29,12 +29,13 @@ import { fileURLToPath } from "node:url";
 import { validateBenchmarkCaseDefinition } from "../benchmarks/autonomy/validate.js";
 import { mean } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-001/fixture/index.js";
 import { parseBoolean } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-002/fixture/index.js";
+import { parsePort } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-003/fixture/index.js";
 
 const repoRoot = fileURLToPath(new URL("../", import.meta.url));
 const corpusRoot = join(repoRoot, "benchmarks", "autonomy", "corpus", "v1");
 
 /** The exact case directories this tranche contains, in declaration order. */
-const EXPECTED_CASE_IDS = ["autonomy-v1-001", "autonomy-v1-002"] as const;
+const EXPECTED_CASE_IDS = ["autonomy-v1-001", "autonomy-v1-002", "autonomy-v1-003"] as const;
 
 /** The artifact files every case directory must contain, relative to the case dir. */
 const REQUIRED_ARTIFACTS = [
@@ -51,7 +52,7 @@ function loadParsedDefinition(caseId: string): unknown {
 }
 
 describe("autonomy-benchmark corpus v1", () => {
-  it("contains exactly the two expected case directories", () => {
+  it("contains exactly the three expected case directories", () => {
     const entries = readdirSync(corpusRoot, { withFileTypes: true });
     const directories = entries
       .filter((entry) => entry.isDirectory())
@@ -87,12 +88,12 @@ describe("autonomy-benchmark corpus v1", () => {
     });
   }
 
-  it("declares two distinct stable case IDs", () => {
+  it("declares three distinct stable case IDs", () => {
     const ids = EXPECTED_CASE_IDS.map((caseId) =>
       validateBenchmarkCaseDefinition(loadParsedDefinition(caseId)).id,
     );
     expect(new Set(ids).size).toBe(ids.length);
-    expect(ids).toEqual(["autonomy-v1-001", "autonomy-v1-002"]);
+    expect(ids).toEqual(["autonomy-v1-001", "autonomy-v1-002", "autonomy-v1-003"]);
   });
 });
 
@@ -123,5 +124,29 @@ describe("autonomy-v1-002 pristine parseBoolean fixture", () => {
     expect(parseBoolean("YES")).toBeUndefined();
     expect(parseBoolean(" true")).toBeUndefined();
     expect(parseBoolean("")).toBeUndefined();
+  });
+});
+
+describe("autonomy-v1-003 pristine parsePort fixture", () => {
+  it("has the documented zero-port defect", () => {
+    expect(parsePort("0")).toBe(0);
+  });
+
+  it("preserves valid decimal ports including the upper bound", () => {
+    expect(parsePort("1")).toBe(1);
+    expect(parsePort("80")).toBe(80);
+    expect(parsePort("443")).toBe(443);
+    expect(parsePort("3000")).toBe(3000);
+    expect(parsePort("65535")).toBe(65535);
+  });
+
+  it("rejects out-of-range, negative, fractional, whitespace, and nonnumeric inputs", () => {
+    expect(parsePort("65536")).toBeUndefined();
+    expect(parsePort("-1")).toBeUndefined();
+    expect(parsePort("1.5")).toBeUndefined();
+    expect(parsePort(" 80")).toBeUndefined();
+    expect(parsePort("80 ")).toBeUndefined();
+    expect(parsePort("")).toBeUndefined();
+    expect(parsePort("abc")).toBeUndefined();
   });
 });
