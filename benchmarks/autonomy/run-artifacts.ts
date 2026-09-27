@@ -49,7 +49,11 @@
  * - Mirrored scalar counters (`repairPasses`, `rescoutPasses`,
  *   `replanPasses`, `planGatePasses`) must agree between state and summary,
  *   and state's `repairPasses` must equal `deterministicRepairPasses` plus
- *   `reviewRepairPasses`.
+ *   `reviewRepairPasses`; the legacy exception is that a state omitting both
+ *   dedicated counters skips only the dedicated reads and sum check (the
+ *   aggregate-only `repairPasses` remains required and mirrored), while the
+ *   presence of either dedicated counter, including null or malformed values,
+ *   restores the full validation.
  * - For the persisted `checkpoints`, `workerContinuations`, and
  *   `parallelBatches` arrays, the summary counts must equal the array lengths;
  *   an absent array (contract-optional) means the summary count must be zero.
@@ -290,19 +294,32 @@ export async function ingestRunArtifacts(
   }
   const workerUnits = unitIds.size;
 
-  const stateDeterministicRepairPasses = requireNonNegativeSafeInteger(
-    state.deterministicRepairPasses,
-    `${STATE_FILE}.deterministicRepairPasses`,
-  );
-  const stateReviewRepairPasses = requireNonNegativeSafeInteger(
-    state.reviewRepairPasses,
-    `${STATE_FILE}.reviewRepairPasses`,
-  );
+  // Legacy aggregate-only exception: when state omits both dedicated
+  // counters, skip the dedicated reads and sum check; presence of either
+  // counter (including null or malformed values) restores the full check.
+  const hasDedicatedRepairCounters =
+    Object.hasOwn(state, "deterministicRepairPasses") || Object.hasOwn(state, "reviewRepairPasses");
+  let stateDeterministicRepairPasses: number | undefined;
+  let stateReviewRepairPasses: number | undefined;
+  if (hasDedicatedRepairCounters) {
+    stateDeterministicRepairPasses = requireNonNegativeSafeInteger(
+      state.deterministicRepairPasses,
+      `${STATE_FILE}.deterministicRepairPasses`,
+    );
+    stateReviewRepairPasses = requireNonNegativeSafeInteger(
+      state.reviewRepairPasses,
+      `${STATE_FILE}.reviewRepairPasses`,
+    );
+  }
   const stateRepairPasses = requireNonNegativeSafeInteger(state.repairPasses, `${STATE_FILE}.repairPasses`);
   const stateRescoutPasses = requireNonNegativeSafeInteger(state.rescoutPasses, `${STATE_FILE}.rescoutPasses`);
   const stateReplanPasses = requireNonNegativeSafeInteger(state.replanPasses, `${STATE_FILE}.replanPasses`);
   const statePlanGatePasses = requireNonNegativeSafeInteger(state.planGatePasses, `${STATE_FILE}.planGatePasses`);
-  if (stateRepairPasses !== stateDeterministicRepairPasses + stateReviewRepairPasses) {
+  if (
+    stateDeterministicRepairPasses !== undefined &&
+    stateReviewRepairPasses !== undefined &&
+    stateRepairPasses !== stateDeterministicRepairPasses + stateReviewRepairPasses
+  ) {
     throw new Error(
       `${STATE_FILE}.repairPasses ${stateRepairPasses} does not equal deterministicRepairPasses ${stateDeterministicRepairPasses} plus reviewRepairPasses ${stateReviewRepairPasses}`,
     );

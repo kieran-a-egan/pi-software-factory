@@ -20,7 +20,13 @@
  *   assertion objects survive, artifact bytes are unchanged, two ingests are
  *   deep-equal, and the returned record is built from fresh objects (explicit
  *   intervention and a failing assertion are preserved, never inferred or
- *   scored).
+ *   scored);
+ * - legacy repair compatibility: a state omitting both dedicated counters is
+ *   accepted with a matching aggregate repairPasses (0 and positive), a
+ *   malformed aggregate on either artifact is rejected naming the
+ *   artifact/field, and the presence of either dedicated counter (the other
+ *   missing, a present null, or a sum inconsistent with the aggregate) still
+ *   triggers the full v0.9 repair validation and rejects.
  *
  * No factory runs, Git setup, model execution, scoring, or committed fixture
  * corpus: all fixtures are generated inside the tests and removed afterward.
@@ -156,6 +162,26 @@ function makeMetadata(): IngestRunArtifactsMetadata {
   };
 }
 
+/**
+ * Base artifacts for a legacy run: both dedicated repair counters omitted
+ * from state, with the aggregate `repairPasses` mirrored between state and
+ * summary. The legacy `factoryVersionRef` is provenance only, never a
+ * dispatch mechanism (dispatch is driven purely by the artifact contents).
+ */
+function legacyRepairArtifacts(repairPasses: number): Record<string, Record<string, unknown> | string> {
+  const artifacts = baseArtifacts();
+  (artifacts["run-summary.json"] as Record<string, unknown>).repairPasses = repairPasses;
+  const state = artifacts["state.json"] as Record<string, unknown>;
+  state.repairPasses = repairPasses;
+  delete state.deterministicRepairPasses;
+  delete state.reviewRepairPasses;
+  return artifacts;
+}
+
+function legacyMetadata(): IngestRunArtifactsMetadata {
+  return { ...makeMetadata(), factoryVersionRef: "factory-v0.7.2+sha.4c1e9a2" };
+}
+
 function deepFreeze<T>(value: T): T {
   if (value !== null && typeof value === "object") {
     for (const key of Object.keys(value)) deepFreeze((value as Record<string, unknown>)[key]);
@@ -204,6 +230,100 @@ it("ingests a valid completed v0.9 run into the complete expected record", async
     durationMs: 123456, // mapped from runWallClockDurationMs, never recomputed
   };
   expect(record).toEqual(expected);
+});
+
+it.each([0, 3])(
+  "accepts a legacy aggregate-only repair run with repairPasses %i (no dedicated counters)",
+  async (repairPasses) => {
+    const runDirectory = await writeRunDirectory(legacyRepairArtifacts(repairPasses));
+
+    const record = await ingestRunArtifacts(runDirectory, legacyMetadata());
+
+    // Only the aggregate is emitted, from the mirrored summary value; no
+    // deterministic/review split is inferred.
+    expect(record.counters.repairPasses).toBe(repairPasses);
+  },
+);
+
+const malformedLegacyRepairCases: Array<{
+  name: string;
+  target: "state.json" | "run-summary.json";
+  value: unknown;
+  absent: boolean;
+  pattern: RegExp;
+}> = [
+  { name: "state negative", target: "state.json", value: -1, absent: false, pattern: /state\.json\.repairPasses/ },
+  { name: "state fractional", target: "state.json", value: 1.5, absent: false, pattern: /state\.json\.repairPasses/ },
+  { name: "state nonnumeric string", target: "state.json", value: "3", absent: false, pattern: /state\.json\.repairPasses/ },
+  { name: "state missing", target: "state.json", value: undefined, absent: true, pattern: /state\.json\.repairPasses/ },
+  { name: "summary negative", target: "run-summary.json", value: -1, absent: false, pattern: /run-summary\.json\.repairPasses/ },
+  { name: "summary fractional", target: "run-summary.json", value: 1.5, absent: false, pattern: /run-summary\.json\.repairPasses/ },
+  { name: "summary nonnumeric string", target: "run-summary.json", value: "3", absent: false, pattern: /run-summary\.json\.repairPasses/ },
+  { name: "summary missing", target: "run-summary.json", value: undefined, absent: true, pattern: /run-summary\.json\.repairPasses/ },
+];
+
+it.each(malformedLegacyRepairCases)(
+  "rejects a malformed legacy %s repairPasses naming the artifact and field",
+  async (tc) => {
+    // The other artifact keeps a valid aggregate (3): the malformed side is
+    // exercised independently.
+    const artifacts = legacyRepairArtifacts(3);
+    const target = artifacts[tc.target] as Record<string, unknown>;
+    if (tc.absent) {
+      delete target.repairPasses;
+    } else {
+      target.repairPasses = tc.value;
+    }
+    const runDirectory = await writeRunDirectory(artifacts);
+
+    await expect(ingestRunArtifacts(runDirectory, legacyMetadata())).rejects.toThrow(tc.pattern);
+  },
+);
+
+it.each([
+  "deterministicRepairPasses",
+  "reviewRepairPasses",
+])(
+  "keeps full v0.9 repair validation when %s is present and the other dedicated counter is missing",
+  async (missingField) => {
+    const artifacts = baseArtifacts();
+    const state = artifacts["state.json"] as Record<string, unknown>;
+    delete state[missingField]; // the other dedicated counter remains present
+    const runDirectory = await writeRunDirectory(artifacts);
+
+    const rejection = ingestRunArtifacts(runDirectory, makeMetadata());
+
+    // Presence of either dedicated counter (even with the other missing)
+    // restores full validation; the legacy aggregate-only path is not entered.
+    await expect(rejection).rejects.toThrow(new RegExp(`state\\.json\\.${missingField}`));
+  },
+);
+
+it("keeps full v0.9 repair validation for a present null dedicated counter", async () => {
+  const artifacts = baseArtifacts();
+  const state = artifacts["state.json"] as Record<string, unknown>;
+  state.deterministicRepairPasses = null; // present but null: not an omission
+  const runDirectory = await writeRunDirectory(artifacts);
+
+  const rejection = ingestRunArtifacts(runDirectory, makeMetadata());
+
+  await expect(rejection).rejects.toThrow(/state\.json\.deterministicRepairPasses/);
+  await expect(rejection).rejects.toThrow(/got null/);
+});
+
+it("keeps the dedicated-counter sum check when dedicated counters are present", async () => {
+  const artifacts = baseArtifacts();
+  const state = artifacts["state.json"] as Record<string, unknown>;
+  const summary = artifacts["run-summary.json"] as Record<string, unknown>;
+  state.repairPasses = 3; // validly typed, mirrored, but 1 + 1 !== 3
+  summary.repairPasses = 3;
+  const runDirectory = await writeRunDirectory(artifacts);
+
+  const rejection = ingestRunArtifacts(runDirectory, makeMetadata());
+
+  await expect(rejection).rejects.toThrow(
+    /state\.json\.repairPasses 3 does not equal deterministicRepairPasses 1 plus reviewRepairPasses 1/,
+  );
 });
 
 it("rejects an absent final verification even when the initial verification.json exists", async () => {
