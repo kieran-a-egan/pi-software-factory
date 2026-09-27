@@ -17,13 +17,15 @@
   },
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "bench:score-case": "node --import tsx benchmarks/autonomy/score-case-cli.ts"
   },
   "dependencies": {
     "@typesafe-ai/sdk": "^0.5.7"
   },
   "devDependencies": {
     "@types/node": "^20.19.0",
+    "tsx": "^4.19.4",
     "typescript": "^5.9.2",
     "vite": "^6.4.3",
     "vitest": "^3.2.4"
