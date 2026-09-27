@@ -1326,7 +1326,10 @@ export async function runFactory(
     store.write(`verification-after-deterministic-repair-${pass}.json`, verification);
   }
 
-  const doReview = async (label?: string) => {
+  const doReview = async (
+    label?: string,
+    reviewRepair?: { previousReview: ReviewResult; repair: WorkerReport },
+  ) => {
     const diffForReview = verification.diff.length > config.maxDiffCharsForReview
       ? `${verification.diff.slice(0, config.maxDiffCharsForReview)}\n\n[diff truncated; inspect repository files for remaining changes]`
       : verification.diff;
@@ -1344,6 +1347,7 @@ export async function runFactory(
           architecture: state.architecture!,
           workers: state.workers!,
           verification: { ...verification, diff: diffForReview },
+          ...(reviewRepair ? { reviewRepair } : {}),
         }),
         modelRuntime,
         tools: readOnlyTools(),
@@ -1426,7 +1430,7 @@ export async function runFactory(
     state.verification = verification;
     store.write(`verification-after-review-repair-${pass}.json`, verification);
 
-    review = await doReview(`after review repair ${pass}`);
+    review = await doReview(`after review repair ${pass}`, { previousReview: review, repair });
     state.review = review;
     store.write(`review-after-repair-${pass}.json`, review);
 

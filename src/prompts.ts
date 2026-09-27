@@ -94,7 +94,15 @@ If executionMode is "isolated-parallel-worktree", do not install missing depende
 }
 
 export function reviewerPrompt(input: unknown): string {
-  return `Review this completed factory change:\n${JSON.stringify(input, null, 2)}\n\nSubmit this shape:\n{
+  const hasReviewRepair =
+    input !== null &&
+    typeof input === "object" &&
+    "reviewRepair" in input &&
+    (input as { reviewRepair?: unknown }).reviewRepair !== undefined;
+  const repairGuidance = hasReviewRepair
+    ? `The payload includes "reviewRepair", containing the immediately preceding review and the latest repair report. The top-level "verification" was run after that latest repair and is the current deterministic evidence. "workers" is the original implementation background, not the latest repair claims. Do not presume any preceding finding is resolved: reassess each preceding finding against the repair's fresh claims, the current deterministic verification, and the current repository state (inspect files where needed) before accepting or rejecting it.\n\n`
+    : "";
+  return `Review this completed factory change:\n${JSON.stringify(input, null, 2)}\n\n${repairGuidance}Submit this shape:\n{
   "summary": string,
   "verdict": "clean" | "changes_requested" | "architectural_issue" | "uncertain",
   "findings": [{
