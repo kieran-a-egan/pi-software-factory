@@ -10,6 +10,7 @@ import { DEFAULT_CONFIG } from "../src/config.js";
 import { runFactory } from "../src/controller.js";
 import * as gitEvidence from "../src/git-evidence.js";
 import { JevDecisionEngine } from "../src/jev.js";
+import * as prompts from "../src/prompts.js";
 import { reserveRun } from "../src/run-safety.js";
 import { createRunStore } from "../src/storage.js";
 import { gitStatus } from "../src/verification.js";
@@ -299,6 +300,59 @@ describe("controller release reliability", () => {
       .toMatchObject({ stage: "worker-gate", phase: "repair", repairClass: "review", repairPass: 1 });
     expect(decisions.find((d) => d.stage === "review-gate" && d.repairClass === "review"))
       .toMatchObject({ stage: "review-gate", repairClass: "review", repairPass: 1 });
+  });
+
+  it("forwards the immediately preceding review, latest repair report, and fresh post-repair verification into the second review", async () => {
+    const firstReview: ReviewResult = {
+      summary: "changes requested",
+      verdict: "changes_requested",
+      findings: [{ severity: "minor", title: "Unreadable error text", explanation: "The implementation in a.txt does not surface a readable error for a failed read.", file: "a.txt", suggestedFix: "Rephrase the error message." }],
+      testGaps: [], requirementCoverage: [],
+    };
+    const cleanReview: ReviewResult = { summary: "clean after repair", verdict: "clean", findings: [], testGaps: [], requirementCoverage: [] };
+    reviewSequence = [firstReview, cleanReview];
+    vi.mocked(JevDecisionEngine.prototype.gateReview).mockResolvedValueOnce({ ...gate, action: "rework" });
+    // The single review repair performs a small, newline-terminated edit so the
+    // post-repair diff is distinguishable from the initial diff.
+    writeWorker = async (options) => {
+      if (assignmentKind(options) === "review-repair") {
+        writeFileSync(join(options.cwd, "a.txt"), "repaired after review\n");
+      } else {
+        const id = workerId(options.prompt);
+        writeFileSync(join(options.cwd, `${id}.txt`), `implemented ${id}\n`);
+      }
+    };
+    const reviewerSpy = vi.spyOn(prompts, "reviewerPrompt");
+
+    const state = await run();
+
+    expect(state.finalStatus).toBe("accepted");
+    expect(state.reviewRepairPasses).toBe(1);
+    expect(state.deterministicRepairPasses).toBe(0);
+    expect(reviewCalls).toBe(2);
+    expect(assignmentsOf("review-repair")).toBe(1);
+    expect(assignmentsOf("deterministic-repair")).toBe(0);
+
+    const inputs = reviewerSpy.mock.calls.map((call) => call[0] as Record<string, any>);
+    expect(inputs).toHaveLength(2);
+
+    // The initial review carries no repair context at all.
+    expect(inputs[0]).not.toHaveProperty("reviewRepair");
+
+    // The second review carries the preceding review, the repair report, and the
+    // fresh post-repair verification, all structurally equal to the persisted
+    // evidence (the controller copies verification into the reviewer payload).
+    expect(inputs[1].reviewRepair.previousReview).toEqual(firstReview);
+    expect(inputs[1].reviewRepair.previousReview).toEqual(json(runDir(state), "review.json"));
+    expect(inputs[1].reviewRepair.repair).toEqual(json(runDir(state), "review-repair-1.json"));
+    const postRepairVerification = json(runDir(state), "verification-after-review-repair-1.json");
+    expect(postRepairVerification.passed).toBe(true);
+    expect(inputs[1].verification).toEqual(postRepairVerification);
+
+    // The repair-specific edit makes the forwarded verification differ from the
+    // initial one, so forwarding a stale verification would fail this assertion.
+    expect(inputs[1].verification).not.toEqual(inputs[0].verification);
+    expect(inputs[1].verification.diff).not.toBe(inputs[0].verification.diff);
   });
 
   it("accepts after exactly two review repairs, each with concrete findings and passing re-verification", async () => {
