@@ -45,7 +45,7 @@ For release history, see [CHANGELOG.md](CHANGELOG.md).
         ▼
  deterministic verification    authoritative
         │
-        ├── fail → Qwen repair → Jev repair gate → reverify
+        ├── fail → bounded deterministic repair → Jev repair gate → reverify
         │
         ▼
  Astra independent review      read-only
@@ -53,8 +53,10 @@ For release history, see [CHANGELOG.md](CHANGELOG.md).
         ▼
  Jev final gate
         │
+        ├── rework (high confidence) → bounded review repair → reverify → re-review
+        │
         ├── accept
-        └── human/rework/replan
+        └── human/low-confidence rework/replan
 ```
 
 ### Core control properties
@@ -169,7 +171,8 @@ Start from [software-factory.example.json](software-factory.example.json). The b
   "contextPaths": ["AGENTS.md", ".okf/project"],
   "requireCleanWorkingTree": true,
   "verificationCommands": [],
-  "maxRepairPasses": 1,
+  "maxDeterministicRepairPasses": 1,
+  "maxReviewRepairPasses": 2,
   "maxWorkerContinuationPasses": 2,
   "workerMaxRuntimeMinutes": 20
 }
@@ -241,11 +244,38 @@ The factory uses bounded recovery rather than open-ended autonomous loops.
 
 - **Planning recovery:** Jev may request a targeted Qwen rescout or Astra replan.
 - **Worker continuation:** Jev may send the same bounded assignment to a fresh Qwen session when concrete work remains.
-- **Deterministic repair:** failed verification may trigger a bounded repair pass followed by re-verification.
+- **Deterministic repair:** failed verification triggers bounded repair passes, each followed by re-verification, up to `maxDeterministicRepairPasses` (default `1`).
+- **Review repair:** a high-confidence Jev rework verdict after review triggers bounded repair passes, each followed by re-verification, an independent re-review, and a re-gate, up to `maxReviewRepairPasses` (default `2`).
 - **Context checkpoints:** long-running Qwen implementation/repair sessions can persist compact continuation state and resume in a fresh session.
 - **Worker watchdog:** implementation and repair sessions are aborted if they exceed the configured runtime limit.
 
 Exhausted limits or low-confidence routing stop at `HUMAN`.
+
+### Repair budgets
+
+Deterministic and review repair run as two independently bounded loops rather than one shared budget:
+
+- `maxDeterministicRepairPasses` (default `1`) bounds repair passes triggered by failed deterministic verification. `0` disables deterministic repair.
+- `maxReviewRepairPasses` (default `2`) bounds repair passes triggered by a high-confidence Jev rework verdict after review. `0` disables review repair.
+- Both limits are validated as non-negative safe integers. The budgets are per-category and do not share a common total cap.
+- A pass is counted when its repair assignment starts, including attempts that subsequently stop early. Continuations and context checkpoints inside a repair do not consume additional repair passes.
+- **Legacy migration:** a configuration that only sets the pre-v0.9 `maxRepairPasses` key migrates to setting both `maxDeterministicRepairPasses` and `maxReviewRepairPasses` to the same legacy value, and the legacy key is then removed from the normalized config. This deliberately preserves a legacy zero (which disabled both repairs), but it changes total capacity for other values: the legacy number is no longer a shared total cap, it becomes the per-category limit for both loops. Setting `maxRepairPasses` together with either new key is a configuration error and the loader rejects it with an actionable migration error instead of choosing a precedence rule.
+
+The state tracks the dedicated counters `deterministicRepairPasses` and `reviewRepairPasses`; `repairPasses` is their derived total and is what `state.json`, `run-summary.json`, the status display's `Repairs:` line, and benchmark repair telemetry continue to report as the aggregate. Decision history renders class-qualified repair passes (`deterministic-repair N` / `review-repair N`) when a record carries `repairClass`, and falls back to the historical `repair N` for older records lacking it.
+
+Control flow stays ordered: deterministic repair completes before the initial review, and review repair re-verifies the change without re-entering the deterministic repair loop — a failure introduced during review repair does not open a new deterministic-repair route. Review repair remains confidence-gated by `jev.minChoiceConfidence`, and final routing still cannot accept a failed verification.
+
+Each repair pass writes collision-free evidence named by repair class and category-local pass:
+
+```text
+deterministic-repair-N.json          deterministic-repair-gate-N.json
+verification-after-deterministic-repair-N.json
+review-repair-N.json                 review-repair-gate-N.json
+verification-after-review-repair-N.json
+review-after-repair-N.json           review-gate-after-repair-N.json
+```
+
+The class-specific stem also propagates to derived checkpoint/continuation records (for example `checkpoint-deterministic-repair-1-1.json` and `continuation-review-repair-2-1.json`). The initial `verification.json`, `review.json`, and `review-gate.json` remain unchanged.
 
 ### Source disposition and interrupted runs
 

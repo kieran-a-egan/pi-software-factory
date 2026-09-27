@@ -63,6 +63,8 @@ export interface ContextCheckpointRecord {
   checkpoint: WorkerCheckpoint;
 }
 
+export type RepairClass = "deterministic" | "review";
+
 export interface WorkerContinuationRecord {
   phase: "implementation" | "repair";
   label: string;
@@ -70,6 +72,8 @@ export interface WorkerContinuationRecord {
   createdAt: string;
   priorDisposition: "continue";
   priorConfidence: number;
+  repairClass?: RepairClass;
+  repairPass?: number;
 }
 
 export interface ParallelBatchRecord {
@@ -140,7 +144,8 @@ export interface FactoryConfig {
   contextMaxBytes: number;
   requireCleanWorkingTree: boolean;
   verificationCommands: string[];
-  maxRepairPasses: number;
+  maxDeterministicRepairPasses: number;
+  maxReviewRepairPasses: number;
   maxWorkerContinuationPasses: number;
   workerMaxRuntimeMinutes: number;
   maxDiffCharsForReview: number;
@@ -283,7 +288,10 @@ export interface FactoryRunState {
   reviewGate?: ReviewGateDecision;
   reviewRouting?: FinalReviewRoutingEvidence;
   sourceDisposition?: RunSafetyEvidence;
-  repairPasses: number;
+  deterministicRepairPasses: number;
+  reviewRepairPasses: number;
+  /** Derived aggregate of the dedicated repair counters; serialization materializes its numeric value. */
+  readonly repairPasses: number;
   rescoutPasses: number;
   replanPasses: number;
   planGatePasses: number;

@@ -151,7 +151,9 @@ function decisionSummary(record: Record<string, any>): string {
   const pass = typeof record.pass === "number"
     ? ` · pass ${record.pass}`
     : typeof record.repairPass === "number"
-      ? ` · repair ${record.repairPass}`
+      ? (record.repairClass === "deterministic" || record.repairClass === "review")
+        ? ` · ${record.repairClass}-repair ${record.repairPass}`
+        : ` · repair ${record.repairPass}`
       : "";
   const routed = decision.action ?? decision.disposition ?? decision.requirementClarity;
   const confidence = typeof decision.confidence === "number"
