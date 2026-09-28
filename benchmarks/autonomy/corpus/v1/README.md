@@ -1,9 +1,9 @@
 # Autonomy benchmark corpus — v1
 
 This directory is a plain, frozen corpus of tiny solvable TypeScript benchmark
-cases. **This tranche contains exactly four cases: `autonomy-v1-001`,
-`autonomy-v1-002`, `autonomy-v1-003`, and `autonomy-v1-004`.** No other
-cases, shared runners, or helpers live here.
+cases. **This tranche contains exactly five cases: `autonomy-v1-001`,
+`autonomy-v1-002`, `autonomy-v1-003`, `autonomy-v1-004`, and
+`autonomy-v1-005`.** No other cases, shared runners, or helpers live here.
 
 ## Layout
 
@@ -50,6 +50,11 @@ The directory name equals the definition's `id`.
   first element `1` instead of the final element `3`; the fix must return the
   final element of a nonempty array while preserving the existing behavior
   that `last([])` returns `undefined`.
+- `autonomy-v1-005` — first-occurrence-order bug: `unique(["b", "a", "b"])`
+  currently returns `["a", "b"]` (the deduplicated values sorted
+  alphabetically); the fix must preserve the first-occurrence order
+  (`["b", "a"]`) while preserving exact case-sensitive deduplication and the
+  no-mutation guarantee.
 
 ## Assertions and manual invocation
 

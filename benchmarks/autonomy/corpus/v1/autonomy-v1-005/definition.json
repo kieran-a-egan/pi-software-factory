@@ -1,0 +1,14 @@
+{
+  "id": "autonomy-v1-005",
+  "schemaVersion": "v1",
+  "kind": "solvable",
+  "category": "bug-fix",
+  "objective": "Modify fixture/index.ts so that the exported function unique(values: readonly string[]): string[] preserves the first-occurrence order of the input values instead of sorting the deduplicated result (for example unique(['b', 'a', 'b']) === ['b', 'a'], unique(['a']) === ['a'], and unique([]) === []), while preserving the existing behavior that duplicates are removed using exact case-sensitive comparison and the supplied array is never mutated. Do not change the exported signature of unique, and do not mutate the supplied array.",
+  "expectedTerminalOutcome": "ACCEPTED",
+  "humanImplementationInterventionAllowed": false,
+  "assertionIdentifiers": [
+    "first-occurrence-order",
+    "existing-unique-behavior",
+    "fixture-typecheck"
+  ]
+}

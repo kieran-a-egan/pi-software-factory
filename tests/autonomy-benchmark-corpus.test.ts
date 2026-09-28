@@ -3,7 +3,7 @@
  * (benchmarks/autonomy/corpus/v1/).
  *
  * The corpus is a plain, frozen set of tiny solvable cases. This suite
- * exercises only the repository-safe, read-only concerns for the four cases
+ * exercises only the repository-safe, read-only concerns for the five cases
  * in this tranche:
  *
  * - each committed definition.json loads through node:fs + JSON.parse,
@@ -12,7 +12,7 @@
  * - the expected stable IDs are present, distinct, and carry the documented
  *   schema/kind/outcome/intervention policy;
  * - each validated ID maps to its directory, whose definition.json, assert.ts,
- *   and all three fixture files exist, and the v1 root holds exactly the four
+ *   and all three fixture files exist, and the v1 root holds exactly the five
  *   expected case directories;
  * - directly imported pristine fixture exports exhibit the documented
  *   pre-task defects/missing aliases plus the important existing behavior.
@@ -31,12 +31,13 @@ import { mean } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-001/fixture/i
 import { parseBoolean } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-002/fixture/index.js";
 import { parsePort } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-003/fixture/index.js";
 import { last } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-004/fixture/index.js";
+import { unique } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-005/fixture/index.js";
 
 const repoRoot = fileURLToPath(new URL("../", import.meta.url));
 const corpusRoot = join(repoRoot, "benchmarks", "autonomy", "corpus", "v1");
 
 /** The exact case directories this tranche contains, in declaration order. */
-const EXPECTED_CASE_IDS = ["autonomy-v1-001", "autonomy-v1-002", "autonomy-v1-003", "autonomy-v1-004"] as const;
+const EXPECTED_CASE_IDS = ["autonomy-v1-001", "autonomy-v1-002", "autonomy-v1-003", "autonomy-v1-004", "autonomy-v1-005"] as const;
 
 /** The artifact files every case directory must contain, relative to the case dir. */
 const REQUIRED_ARTIFACTS = [
@@ -53,7 +54,7 @@ function loadParsedDefinition(caseId: string): unknown {
 }
 
 describe("autonomy-benchmark corpus v1", () => {
-  it("contains exactly the four expected case directories", () => {
+  it("contains exactly the five expected case directories", () => {
     const entries = readdirSync(corpusRoot, { withFileTypes: true });
     const directories = entries
       .filter((entry) => entry.isDirectory())
@@ -89,12 +90,12 @@ describe("autonomy-benchmark corpus v1", () => {
     });
   }
 
-  it("declares four distinct stable case IDs", () => {
+  it("declares five distinct stable case IDs", () => {
     const ids = EXPECTED_CASE_IDS.map((caseId) =>
       validateBenchmarkCaseDefinition(loadParsedDefinition(caseId)).id,
     );
     expect(new Set(ids).size).toBe(ids.length);
-    expect(ids).toEqual(["autonomy-v1-001", "autonomy-v1-002", "autonomy-v1-003", "autonomy-v1-004"]);
+    expect(ids).toEqual(["autonomy-v1-001", "autonomy-v1-002", "autonomy-v1-003", "autonomy-v1-004", "autonomy-v1-005"]);
   });
 });
 
@@ -165,5 +166,23 @@ describe("autonomy-v1-004 pristine last fixture", () => {
 
   it("preserves the existing empty-array behavior", () => {
     expect(last([])).toBeUndefined();
+  });
+});
+
+describe("autonomy-v1-005 pristine unique fixture", () => {
+  it("sorts the deduplicated result alphabetically instead of preserving first-occurrence order", () => {
+    expect(unique(["b", "a", "b"])).toEqual(["a", "b"]);
+  });
+
+  it("retains exact case-sensitive deduplication and the empty-array behavior", () => {
+    expect(unique(["a"])).toEqual(["a"]);
+    expect(unique(["a", "A"])).toEqual(["A", "a"]);
+    expect(unique([])).toEqual([]);
+  });
+
+  it("does not mutate the supplied array's contents or ordering", () => {
+    const input = ["b", "a", "b"];
+    expect(unique(input)).toEqual(["a", "b"]);
+    expect(input).toEqual(["b", "a", "b"]);
   });
 });
