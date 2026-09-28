@@ -1,9 +1,8 @@
 # Autonomy benchmark corpus — v1
 
 This directory is a plain, frozen corpus of tiny solvable TypeScript benchmark
-cases. **This tranche contains exactly six cases: `autonomy-v1-001`,
-`autonomy-v1-002`, `autonomy-v1-003`, `autonomy-v1-004`, `autonomy-v1-005`,
-and `autonomy-v1-006`.** No other cases, shared runners, or helpers live here.
+cases. **This tranche contains exactly seven cases, `autonomy-v1-001` through
+`autonomy-v1-007`.** No other cases, shared runners, or helpers live here.
 
 ## Layout
 
@@ -61,6 +60,13 @@ The directory name equals the definition's `id`.
   `undefined`); the fix must remove only the `null` and `undefined` entries
   while preserving the relative order of retained values, the generic
   typing, and the no-mutation guarantee.
+- `autonomy-v1-007` — misplaced-prefix-removal bug: `stripPrefix('valuepre', 'pre')`
+  currently returns `'value'` (a first-occurrence replacement that removes the
+  prefix anywhere in the value, not only when it leads); the fix must remove
+  only a single leading prefix (`stripPrefix('prevalue', 'pre')` returns
+  `'value'`, `stripPrefix('valuepre', 'pre')` returns `'valuepre'` unchanged)
+  while preserving exact case-sensitive matching, no trimming or
+  normalization, and the unchanged empty-prefix behavior.
 
 ## Assertions and manual invocation
 

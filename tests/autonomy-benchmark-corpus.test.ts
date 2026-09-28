@@ -3,7 +3,7 @@
  * (benchmarks/autonomy/corpus/v1/).
  *
  * The corpus is a plain, frozen set of tiny solvable cases. This suite
- * exercises only the repository-safe, read-only concerns for the six cases
+ * exercises only the repository-safe, read-only concerns for the seven cases
  * in this tranche:
  *
  * - each committed definition.json loads through node:fs + JSON.parse,
@@ -12,7 +12,7 @@
  * - the expected stable IDs are present, distinct, and carry the documented
  *   schema/kind/outcome/intervention policy;
  * - each validated ID maps to its directory, whose definition.json, assert.ts,
- *   and all three fixture files exist, and the v1 root holds exactly the six
+ *   and all three fixture files exist, and the v1 root holds exactly the seven
  *   expected case directories;
  * - directly imported pristine fixture exports exhibit the documented
  *   pre-task defects/missing aliases plus the important existing behavior.
@@ -33,12 +33,13 @@ import { parsePort } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-003/fixt
 import { last } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-004/fixture/index.js";
 import { unique } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-005/fixture/index.js";
 import { filterDefined } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-006/fixture/index.js";
+import { stripPrefix } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-007/fixture/index.js";
 
 const repoRoot = fileURLToPath(new URL("../", import.meta.url));
 const corpusRoot = join(repoRoot, "benchmarks", "autonomy", "corpus", "v1");
 
 /** The exact case directories this tranche contains, in declaration order. */
-const EXPECTED_CASE_IDS = ["autonomy-v1-001", "autonomy-v1-002", "autonomy-v1-003", "autonomy-v1-004", "autonomy-v1-005", "autonomy-v1-006"] as const;
+const EXPECTED_CASE_IDS = ["autonomy-v1-001", "autonomy-v1-002", "autonomy-v1-003", "autonomy-v1-004", "autonomy-v1-005", "autonomy-v1-006", "autonomy-v1-007"] as const;
 
 /** The artifact files every case directory must contain, relative to the case dir. */
 const REQUIRED_ARTIFACTS = [
@@ -55,7 +56,7 @@ function loadParsedDefinition(caseId: string): unknown {
 }
 
 describe("autonomy-benchmark corpus v1", () => {
-  it("contains exactly the six expected case directories", () => {
+  it("contains exactly the seven expected case directories", () => {
     const entries = readdirSync(corpusRoot, { withFileTypes: true });
     const directories = entries
       .filter((entry) => entry.isDirectory())
@@ -91,12 +92,12 @@ describe("autonomy-benchmark corpus v1", () => {
     });
   }
 
-  it("declares six distinct stable case IDs", () => {
+  it("declares seven distinct stable case IDs", () => {
     const ids = EXPECTED_CASE_IDS.map((caseId) =>
       validateBenchmarkCaseDefinition(loadParsedDefinition(caseId)).id,
     );
     expect(new Set(ids).size).toBe(ids.length);
-    expect(ids).toEqual(["autonomy-v1-001", "autonomy-v1-002", "autonomy-v1-003", "autonomy-v1-004", "autonomy-v1-005", "autonomy-v1-006"]);
+    expect(ids).toEqual(["autonomy-v1-001", "autonomy-v1-002", "autonomy-v1-003", "autonomy-v1-004", "autonomy-v1-005", "autonomy-v1-006", "autonomy-v1-007"]);
   });
 });
 
@@ -217,5 +218,20 @@ describe("autonomy-v1-006 pristine filterDefined fixture", () => {
     filterDefined(input);
     expect(input).toEqual(savedCopy);
     expect(input[4]).toBe(objectA);
+  });
+});
+
+describe("autonomy-v1-007 pristine stripPrefix fixture", () => {
+  it("removes the first literal occurrence of the prefix anywhere, not only a leading one", () => {
+    expect(stripPrefix("valuepre", "pre")).toBe("value");
+    expect(stripPrefix("xprevalue", "pre")).toBe("xvalue");
+  });
+
+  it("preserves true leading-prefix removal", () => {
+    expect(stripPrefix("prevalue", "pre")).toBe("value");
+  });
+
+  it("leaves the value unchanged for an empty prefix", () => {
+    expect(stripPrefix("value", "")).toBe("value");
   });
 });
