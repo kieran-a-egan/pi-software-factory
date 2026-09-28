@@ -1,0 +1,14 @@
+{
+  "id": "autonomy-v1-004",
+  "schemaVersion": "v1",
+  "kind": "solvable",
+  "category": "bug-fix",
+  "objective": "Modify fixture/index.ts so that the exported function last(values: readonly T[]): T | undefined returns the final element of a nonempty array (for example last([1]) === 1, last([1, 2, 3]) === 3, and last(['a', 'b', 'c']) === 'c'), while preserving the existing behavior that last([]) returns undefined. Do not change the exported signature of last, and do not mutate the supplied array.",
+  "expectedTerminalOutcome": "ACCEPTED",
+  "humanImplementationInterventionAllowed": false,
+  "assertionIdentifiers": [
+    "final-element",
+    "existing-last-behavior",
+    "fixture-typecheck"
+  ]
+}

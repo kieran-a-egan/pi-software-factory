@@ -1,9 +1,9 @@
 # Autonomy benchmark corpus — v1
 
 This directory is a plain, frozen corpus of tiny solvable TypeScript benchmark
-cases. **This tranche contains exactly three cases: `autonomy-v1-001`,
-`autonomy-v1-002`, and `autonomy-v1-003`.** No other cases, shared runners,
-or helpers live here.
+cases. **This tranche contains exactly four cases: `autonomy-v1-001`,
+`autonomy-v1-002`, `autonomy-v1-003`, and `autonomy-v1-004`.** No other
+cases, shared runners, or helpers live here.
 
 ## Layout
 
@@ -46,6 +46,10 @@ The directory name equals the definition's `id`.
   instead of `undefined`; the fix must reject `'0'` while preserving valid
   decimal ports up to `'65535'`, strict digit-only parsing, and rejection of
   out-of-range, negative, fractional, whitespace, and nonnumeric inputs.
+- `autonomy-v1-004` — off-by-one bug: `last([1, 2, 3])` currently returns the
+  first element `1` instead of the final element `3`; the fix must return the
+  final element of a nonempty array while preserving the existing behavior
+  that `last([])` returns `undefined`.
 
 ## Assertions and manual invocation
 
