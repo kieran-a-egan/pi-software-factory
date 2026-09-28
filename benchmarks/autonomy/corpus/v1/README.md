@@ -1,9 +1,9 @@
 # Autonomy benchmark corpus — v1
 
 This directory is a plain, frozen corpus of tiny solvable TypeScript benchmark
-cases. **This tranche contains exactly five cases: `autonomy-v1-001`,
-`autonomy-v1-002`, `autonomy-v1-003`, `autonomy-v1-004`, and
-`autonomy-v1-005`.** No other cases, shared runners, or helpers live here.
+cases. **This tranche contains exactly six cases: `autonomy-v1-001`,
+`autonomy-v1-002`, `autonomy-v1-003`, `autonomy-v1-004`, `autonomy-v1-005`,
+and `autonomy-v1-006`.** No other cases, shared runners, or helpers live here.
 
 ## Layout
 
@@ -55,6 +55,12 @@ The directory name equals the definition's `id`.
   alphabetically); the fix must preserve the first-occurrence order
   (`["b", "a"]`) while preserving exact case-sensitive deduplication and the
   no-mutation guarantee.
+- `autonomy-v1-006` — nullish-filtering bug: `filterDefined([1, null, 0, false, '', 'a', undefined])`
+  currently returns `[1, 'a']` (a truthiness-based filter that drops
+  legitimate falsy values `0`, `false`, and `''` along with `null` and
+  `undefined`); the fix must remove only the `null` and `undefined` entries
+  while preserving the relative order of retained values, the generic
+  typing, and the no-mutation guarantee.
 
 ## Assertions and manual invocation
 

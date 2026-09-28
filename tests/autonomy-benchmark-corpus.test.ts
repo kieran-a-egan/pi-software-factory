@@ -3,7 +3,7 @@
  * (benchmarks/autonomy/corpus/v1/).
  *
  * The corpus is a plain, frozen set of tiny solvable cases. This suite
- * exercises only the repository-safe, read-only concerns for the five cases
+ * exercises only the repository-safe, read-only concerns for the six cases
  * in this tranche:
  *
  * - each committed definition.json loads through node:fs + JSON.parse,
@@ -12,7 +12,7 @@
  * - the expected stable IDs are present, distinct, and carry the documented
  *   schema/kind/outcome/intervention policy;
  * - each validated ID maps to its directory, whose definition.json, assert.ts,
- *   and all three fixture files exist, and the v1 root holds exactly the five
+ *   and all three fixture files exist, and the v1 root holds exactly the six
  *   expected case directories;
  * - directly imported pristine fixture exports exhibit the documented
  *   pre-task defects/missing aliases plus the important existing behavior.
@@ -32,12 +32,13 @@ import { parseBoolean } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-002/f
 import { parsePort } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-003/fixture/index.js";
 import { last } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-004/fixture/index.js";
 import { unique } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-005/fixture/index.js";
+import { filterDefined } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-006/fixture/index.js";
 
 const repoRoot = fileURLToPath(new URL("../", import.meta.url));
 const corpusRoot = join(repoRoot, "benchmarks", "autonomy", "corpus", "v1");
 
 /** The exact case directories this tranche contains, in declaration order. */
-const EXPECTED_CASE_IDS = ["autonomy-v1-001", "autonomy-v1-002", "autonomy-v1-003", "autonomy-v1-004", "autonomy-v1-005"] as const;
+const EXPECTED_CASE_IDS = ["autonomy-v1-001", "autonomy-v1-002", "autonomy-v1-003", "autonomy-v1-004", "autonomy-v1-005", "autonomy-v1-006"] as const;
 
 /** The artifact files every case directory must contain, relative to the case dir. */
 const REQUIRED_ARTIFACTS = [
@@ -54,7 +55,7 @@ function loadParsedDefinition(caseId: string): unknown {
 }
 
 describe("autonomy-benchmark corpus v1", () => {
-  it("contains exactly the five expected case directories", () => {
+  it("contains exactly the six expected case directories", () => {
     const entries = readdirSync(corpusRoot, { withFileTypes: true });
     const directories = entries
       .filter((entry) => entry.isDirectory())
@@ -90,12 +91,12 @@ describe("autonomy-benchmark corpus v1", () => {
     });
   }
 
-  it("declares five distinct stable case IDs", () => {
+  it("declares six distinct stable case IDs", () => {
     const ids = EXPECTED_CASE_IDS.map((caseId) =>
       validateBenchmarkCaseDefinition(loadParsedDefinition(caseId)).id,
     );
     expect(new Set(ids).size).toBe(ids.length);
-    expect(ids).toEqual(["autonomy-v1-001", "autonomy-v1-002", "autonomy-v1-003", "autonomy-v1-004", "autonomy-v1-005"]);
+    expect(ids).toEqual(["autonomy-v1-001", "autonomy-v1-002", "autonomy-v1-003", "autonomy-v1-004", "autonomy-v1-005", "autonomy-v1-006"]);
   });
 });
 
@@ -184,5 +185,37 @@ describe("autonomy-v1-005 pristine unique fixture", () => {
     const input = ["b", "a", "b"];
     expect(unique(input)).toEqual(["a", "b"]);
     expect(input).toEqual(["b", "a", "b"]);
+  });
+});
+
+describe("autonomy-v1-006 pristine filterDefined fixture", () => {
+  it("drops the legitimate falsy values 0, false, and '' along with nullish entries", () => {
+    expect(filterDefined([0, 1, null])).toEqual([1]);
+    expect(filterDefined([false, true, undefined])).toEqual([true]);
+    expect(filterDefined(["", "x", null])).toEqual(["x"]);
+  });
+
+  it("filters empty and nullish inputs while preserving retained order", () => {
+    expect(filterDefined([])).toEqual([]);
+    expect(filterDefined([1, null, 2, undefined])).toEqual([1, 2]);
+    expect(filterDefined([9, null, 3, undefined, 5, null, 3])).toEqual([9, 3, 5, 3]);
+  });
+
+  it("retains object elements in their original order as the same references", () => {
+    const objectA = { id: "a" };
+    const objectB = { id: "b" };
+    const result = filterDefined([objectA, null, objectB, undefined]);
+    expect(result).toEqual([objectA, objectB]);
+    expect(result[0]).toBe(objectA);
+    expect(result[1]).toBe(objectB);
+  });
+
+  it("does not mutate the supplied array", () => {
+    const objectA = { id: "a" };
+    const input: (number | string | typeof objectA | null | undefined)[] = [0, null, "x", undefined, objectA];
+    const savedCopy = [...input];
+    filterDefined(input);
+    expect(input).toEqual(savedCopy);
+    expect(input[4]).toBe(objectA);
   });
 });
