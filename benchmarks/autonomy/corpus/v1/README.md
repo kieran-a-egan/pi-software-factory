@@ -1,8 +1,8 @@
 # Autonomy benchmark corpus — v1
 
 This directory is a plain, frozen corpus of tiny solvable TypeScript benchmark
-cases. **This tranche contains exactly eight cases, `autonomy-v1-001` through
-`autonomy-v1-008`.** No other cases, shared runners, or helpers live here.
+cases. **This tranche contains exactly nine cases, `autonomy-v1-001` through
+`autonomy-v1-009`.** No other cases, shared runners, or helpers live here.
 
 ## Layout
 
@@ -75,6 +75,16 @@ The directory name equals the definition's `id`.
   their original values, exact case-sensitive key matching, the guarantee
   that the result is a fresh object distinct from both inputs, and the
   guarantee that neither input object is modified.
+- `autonomy-v1-009` — inclusive-end slicing bug: `sliceInclusive(['a', 'b', 'c', 'd'], 1, 2)`
+  currently returns `['b']` (the function delegates to `Array.prototype.slice`,
+  which treats `end` as exclusive, so the element at the supplied end index is
+  omitted); the fix must include the element at the end index
+  (`sliceInclusive(['a', 'b', 'c', 'd'], 1, 2)` returns `['b', 'c']`) while
+  preserving the existing inclusive start position, the exclusion of elements
+  outside the requested bounds, beyond-length end handling as in
+  `Array.prototype.slice`, the generic typing, and the guarantees that the
+  result is a fresh array distinct from the input and that the supplied array
+  is never mutated.
 
 ## Assertions and manual invocation
 

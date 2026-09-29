@@ -3,7 +3,7 @@
  * (benchmarks/autonomy/corpus/v1/).
  *
  * The corpus is a plain, frozen set of tiny solvable cases. This suite
- * exercises only the repository-safe, read-only concerns for the eight cases
+ * exercises only the repository-safe, read-only concerns for the nine cases
  * in this tranche:
  *
  * - each committed definition.json loads through node:fs + JSON.parse,
@@ -12,7 +12,7 @@
  * - the expected stable IDs are present, distinct, and carry the documented
  *   schema/kind/outcome/intervention policy;
  * - each validated ID maps to its directory, whose definition.json, assert.ts,
- *   and all three fixture files exist, and the v1 root holds exactly the eight
+ *   and all three fixture files exist, and the v1 root holds exactly the nine
  *   expected case directories;
  * - directly imported pristine fixture exports exhibit the documented
  *   pre-task defects/missing aliases plus the important existing behavior.
@@ -35,12 +35,13 @@ import { unique } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-005/fixture
 import { filterDefined } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-006/fixture/index.js";
 import { stripPrefix } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-007/fixture/index.js";
 import { mergeOptions } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-008/fixture/index.js";
+import { sliceInclusive } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-009/fixture/index.js";
 
 const repoRoot = fileURLToPath(new URL("../", import.meta.url));
 const corpusRoot = join(repoRoot, "benchmarks", "autonomy", "corpus", "v1");
 
 /** The exact case directories this tranche contains, in declaration order. */
-const EXPECTED_CASE_IDS = ["autonomy-v1-001", "autonomy-v1-002", "autonomy-v1-003", "autonomy-v1-004", "autonomy-v1-005", "autonomy-v1-006", "autonomy-v1-007", "autonomy-v1-008"] as const;
+const EXPECTED_CASE_IDS = ["autonomy-v1-001", "autonomy-v1-002", "autonomy-v1-003", "autonomy-v1-004", "autonomy-v1-005", "autonomy-v1-006", "autonomy-v1-007", "autonomy-v1-008", "autonomy-v1-009"] as const;
 
 /** The artifact files every case directory must contain, relative to the case dir. */
 const REQUIRED_ARTIFACTS = [
@@ -57,7 +58,7 @@ function loadParsedDefinition(caseId: string): unknown {
 }
 
 describe("autonomy-benchmark corpus v1", () => {
-  it("contains exactly the eight expected case directories", () => {
+  it("contains exactly the nine expected case directories", () => {
     const entries = readdirSync(corpusRoot, { withFileTypes: true });
     const directories = entries
       .filter((entry) => entry.isDirectory())
@@ -93,12 +94,12 @@ describe("autonomy-benchmark corpus v1", () => {
     });
   }
 
-  it("declares eight distinct stable case IDs", () => {
+  it("declares nine distinct stable case IDs", () => {
     const ids = EXPECTED_CASE_IDS.map((caseId) =>
       validateBenchmarkCaseDefinition(loadParsedDefinition(caseId)).id,
     );
     expect(new Set(ids).size).toBe(ids.length);
-    expect(ids).toEqual(["autonomy-v1-001", "autonomy-v1-002", "autonomy-v1-003", "autonomy-v1-004", "autonomy-v1-005", "autonomy-v1-006", "autonomy-v1-007", "autonomy-v1-008"]);
+    expect(ids).toEqual(["autonomy-v1-001", "autonomy-v1-002", "autonomy-v1-003", "autonomy-v1-004", "autonomy-v1-005", "autonomy-v1-006", "autonomy-v1-007", "autonomy-v1-008", "autonomy-v1-009"]);
   });
 });
 
@@ -234,6 +235,29 @@ describe("autonomy-v1-007 pristine stripPrefix fixture", () => {
 
   it("leaves the value unchanged for an empty prefix", () => {
     expect(stripPrefix("value", "")).toBe("value");
+  });
+});
+
+describe("autonomy-v1-009 pristine sliceInclusive fixture", () => {
+  it("has the documented exclusive-end defect: the element at the end index is omitted", () => {
+    // Pristine: `end` is exclusive (delegation to Array.prototype.slice), so
+    // the element at the supplied end index is missing from the result.
+    expect(sliceInclusive(["a", "b", "c", "d"], 1, 2)).toEqual(["b"]);
+  });
+
+  it("preserves the inclusive start position, beyond-length ends, and empty-array behavior", () => {
+    expect(sliceInclusive(["a", "b", "c", "d"], 0, 1)).toEqual(["a"]);
+    expect(sliceInclusive(["a", "b", "c", "d"], 1, 4)).toEqual(["b", "c", "d"]);
+    expect(sliceInclusive(["a", "b", "c", "d"], 2, 99)).toEqual(["c", "d"]);
+    expect(sliceInclusive([], 0, 1)).toEqual([]);
+  });
+
+  it("does not mutate the supplied array and returns a fresh array distinct from the input", () => {
+    const input = ["a", "b", "c", "d"];
+    const before = [...input];
+    const result = sliceInclusive(input, 1, 2);
+    expect(input).toEqual(before);
+    expect(result).not.toBe(input);
   });
 });
 
