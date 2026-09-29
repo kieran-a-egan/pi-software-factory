@@ -1,0 +1,14 @@
+{
+  "id": "autonomy-v1-008",
+  "schemaVersion": "v1",
+  "kind": "solvable",
+  "category": "bug-fix",
+  "objective": "Modify fixture/index.ts so that the exported function mergeOptions(defaults: Readonly<Record<string, string>>, overrides: Readonly<Record<string, string>>): Record<string, string> returns a fresh object in which, for every key present in both inputs, the value from `overrides` wins, while keys present in only one input survive with their original values. Preserve exact case-sensitive key matching (for example `theme` and `Theme` are distinct keys), the guarantee that the result is a fresh object distinct from both inputs, the guarantee that neither input object is modified, and the exported signature of mergeOptions.",
+  "expectedTerminalOutcome": "ACCEPTED",
+  "humanImplementationInterventionAllowed": false,
+  "assertionIdentifiers": [
+    "override-precedence",
+    "existing-merge-behavior",
+    "fixture-typecheck"
+  ]
+}
