@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.0
+
+- add the deterministic v1 autonomy benchmark contract, validation, per-case scoring, aggregate release-gate scoring, run-artifact ingestion, and offline scoring CLIs
+- add and freeze the ten-case v1 autonomy benchmark corpus with case-specific deterministic behavioral assertions and fixture-local typechecks
+- separate deterministic-verification repair passes from review-driven repair passes while retaining aggregate repair accounting for compatibility
+- pass scout evidence through to implementation workers so repository findings are available during bounded implementation
+- fix post-repair review context so fresh repair evidence and current verification replace stale pre-repair findings instead of causing repeated false rework
+- add focused regression coverage for benchmark validation/scoring/CLI behavior, run-artifact ingestion, repair accounting, implementation evidence, reviewer prompts, and controller routing
 ## 0.8.2
 
 - fix implementation-scope and parallel worktree snapshots when the configured runtime artifact prefix is ignored by Git by routing all scratch-index staging through the same explicit, literal-path capture primitive used for source evidence
