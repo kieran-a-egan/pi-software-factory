@@ -14,16 +14,23 @@ import * as prompts from "../src/prompts.js";
 import { reserveRun } from "../src/run-safety.js";
 import { createRunStore } from "../src/storage.js";
 import { gitStatus } from "../src/verification.js";
-import type { ArchitectureResult, FactoryConfig, FactoryRunState, ReviewGateDecision, ReviewResult, ScoutResult } from "../src/types.js";
+import type { ArchitectureResult, FactoryConfig, FactoryProgressEvent, FactoryRunState, ModelRef, ReviewGateDecision, ReviewResult, ScoutResult } from "../src/types.js";
 import { makeCheckpointFixture, makeFakeModelRuntime, makeScoutResultFixture, makeWorkerReportFixture } from "./helpers/agent-runner-harness.js";
 
 const exec = promisify(execFile);
 async function git(cwd: string, ...args: string[]) {
   return (await exec("git", args, { cwd, windowsHide: true })).stdout;
 }
-const metrics: agents.AgentRunMetrics = {
-  model: "fixture", cost: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+const roleModels: FactoryConfig["models"] = {
+  scout: { provider: "prov-scout", model: "model-scout", thinking: "low" },
+  architect: { provider: "prov-architect", model: "model-architect", thinking: "xhigh" },
+  implementer: { provider: "prov-implementer", model: "model-implementer", thinking: "minimal" },
+  reviewer: { provider: "prov-reviewer", model: "model-reviewer", thinking: "high" },
+  repairer: { provider: "prov-repairer", model: "model-repairer", thinking: "off" },
 };
+const runnerMetrics = (model: ModelRef): agents.AgentRunMetrics => ({
+  model: `${model.provider}/${model.model}`, cost: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+});
 let cwd: string;
 let config: FactoryConfig;
 let architecture: ArchitectureResult;
@@ -35,6 +42,7 @@ let originalHead: string;
 let workerAssignments: Array<{ kind: "implementation" | "deterministic-repair" | "review-repair"; unitId: string }>;
 let reviewSequence: ReviewResult[];
 let reviewCalls: number;
+let runnerCalls: Array<{ fn: "runAgent" | "runCheckpointableAgent"; role: string; model: ModelRef }>;
 let implementationPrompts: Array<{ unitId: string; prompt: string }> = [];
 let scoutFactory: () => ScoutResult = () => makeScoutResultFixture();
 
@@ -116,6 +124,7 @@ beforeEach(async () => {
   scoutFactory = () => makeScoutResultFixture();
   reviewSequence = [review];
   reviewCalls = 0;
+  runnerCalls = [];
   writeWorker = async (options) => {
     const id = workerId(options.prompt);
     writeFileSync(join(options.cwd, `${id}.txt`), `implemented ${id}\n`);
@@ -130,21 +139,25 @@ beforeEach(async () => {
   });
   vi.spyOn(JevDecisionEngine.prototype, "gateWorker").mockResolvedValue({ disposition: "ready", confidence: 1, raw: {} });
   vi.spyOn(JevDecisionEngine.prototype, "gateReview").mockImplementation(async () => structuredClone(gate));
-  vi.spyOn(agents, "runAgent").mockImplementation(async (options) => ({
-    result: options.validate(
-      options.role === "scout" ? scoutFactory()
-        : options.role === "architect" ? architecture
-        : reviewSequence[Math.min(reviewCalls++, reviewSequence.length - 1)],
-    ), metrics,
-  }));
+  vi.spyOn(agents, "runAgent").mockImplementation(async (options) => {
+    runnerCalls.push({ fn: "runAgent", role: options.role, model: options.model });
+    return {
+      result: options.validate(
+        options.role === "scout" ? scoutFactory()
+          : options.role === "architect" ? architecture
+          : reviewSequence[Math.min(reviewCalls++, reviewSequence.length - 1)],
+      ), metrics: runnerMetrics(options.model),
+    };
+  });
   vi.spyOn(agents, "runCheckpointableAgent").mockImplementation(async (options) => {
+    runnerCalls.push({ fn: "runCheckpointableAgent", role: options.role, model: options.model });
     workerCalls++;
     await writeWorker(options);
     const id = workerId(options.prompt);
     const kind = assignmentKind(options);
     workerAssignments.push({ kind, unitId: id });
     if (kind === "implementation") implementationPrompts.push({ unitId: id, prompt: options.prompt });
-    return { kind: "result", result: options.validate(makeWorkerReportFixture({ unitId: id, changedFiles: [`${id}.txt`] })), metrics };
+    return { kind: "result", result: options.validate(makeWorkerReportFixture({ unitId: id, changedFiles: [`${id}.txt`] })), metrics: runnerMetrics(options.model) };
   });
 });
 
@@ -757,8 +770,10 @@ describe("controller release reliability", () => {
   });
 
   it("persists checkpoint evidence for a review repair without consuming an additional review pass", async () => {
+    config.models = structuredClone(roleModels);
     let reviewRepairCheckpoint = 0;
     vi.mocked(agents.runCheckpointableAgent).mockImplementation(async (options) => {
+      runnerCalls.push({ fn: "runCheckpointableAgent", role: options.role, model: options.model });
       workerCalls++;
       const kind = assignmentKind(options);
       await writeWorker(options);
@@ -769,9 +784,9 @@ describe("controller release reliability", () => {
       if (kind === "review-repair" && reviewRepairCheckpoint === 0) {
         reviewRepairCheckpoint++;
         // First segment of the single review repair ends in a checkpoint.
-        return { kind: "checkpoint", checkpoint: makeCheckpointFixture({ unitId: id }), context: { tokens: 70_000, contextWindow: 100_000, percent: 70 }, metrics };
+        return { kind: "checkpoint", checkpoint: makeCheckpointFixture({ unitId: id }), context: { tokens: 70_000, contextWindow: 100_000, percent: 70 }, metrics: runnerMetrics(options.model) };
       }
-      return { kind: "result", result: options.validate(makeWorkerReportFixture({ unitId: id, changedFiles: [`${id}.txt`] })), metrics };
+      return { kind: "result", result: options.validate(makeWorkerReportFixture({ unitId: id, changedFiles: [`${id}.txt`] })), metrics: runnerMetrics(options.model) };
     });
     vi.mocked(JevDecisionEngine.prototype.gateReview).mockResolvedValueOnce({ ...gate, action: "rework" });
     const state = await run();
@@ -793,11 +808,23 @@ describe("controller release reliability", () => {
     expect(checkpoint.context).toMatchObject({ tokens: 70_000 });
     expect(state.checkpoints).toHaveLength(1);
     expect(state.checkpoints?.[0]).toMatchObject({ stage: "qwen-repair", label: "review repair 1", index: 1 });
+    // Both repair segments (original and checkpoint-resumed) resolved the
+    // repairer role's ModelRef, and telemetry reports the resolved model.
+    const repairerCalls = runnerCalls.filter((call) => call.fn === "runCheckpointableAgent" && call.role === "repairer");
+    expect(repairerCalls).toEqual([
+      { fn: "runCheckpointableAgent", role: "repairer", model: roleModels.repairer },
+      { fn: "runCheckpointableAgent", role: "repairer", model: roleModels.repairer },
+    ]);
+    expect(state.telemetry?.filter((stage) => stage.stage === "qwen-repair").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
+      ["qwen-repair", "qwen", "prov-repairer/model-repairer", "completed"],
+      ["qwen-repair", "qwen", "prov-repairer/model-repairer", "completed"],
+    ]);
     expect(json(runDir(state), "state.json")).toMatchObject({ deterministicRepairPasses: 0, reviewRepairPasses: 1, repairPasses: 1 });
     expect(json(runDir(state), "run-summary.json")).toMatchObject({ deterministicRepairPasses: 0, reviewRepairPasses: 1, repairPasses: 1 });
   });
 
   it("runs a deterministic repair continuation under the default continuation budget without consuming an additional repair pass", async () => {
+    config.models = structuredClone(roleModels);
     const check = 'node -e "process.exit(require(\'fs\').readFileSync(\'a.txt\',\'utf8\').startsWith(\'good\')?0:1)"';
     config.verificationCommands = [check];
     writeFileSync(join(cwd, "a.txt"), "good baseline\n");
@@ -860,6 +887,17 @@ describe("controller release reliability", () => {
     expect(decisionsOf(state, "worker-gate")
       .filter((d) => d.repairClass === "deterministic")
       .map((d) => [d.repairPass, d.decision.disposition])).toEqual([[1, "continue"], [1, "ready"]]);
+    // Both deterministic repair segments (original and Jev-continuation)
+    // resolved the repairer role's ModelRef.
+    const repairerCalls = runnerCalls.filter((call) => call.fn === "runCheckpointableAgent" && call.role === "repairer");
+    expect(repairerCalls).toEqual([
+      { fn: "runCheckpointableAgent", role: "repairer", model: roleModels.repairer },
+      { fn: "runCheckpointableAgent", role: "repairer", model: roleModels.repairer },
+    ]);
+    expect(state.telemetry?.filter((stage) => stage.stage === "qwen-repair").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
+      ["qwen-repair", "qwen", "prov-repairer/model-repairer", "completed"],
+      ["qwen-repair", "qwen", "prov-repairer/model-repairer", "completed"],
+    ]);
   });
 
   it("runs zero repair assignments when both explicit budgets are zero, and reaches HUMAN through final-review routing", async () => {
@@ -1221,6 +1259,7 @@ describe("controller release reliability", () => {
   });
 
   it("retains the unit-scoped evidence across a checkpointed fresh implementation worker session", async () => {
+    config.models = structuredClone(roleModels);
     scoutFactory = () => ({
       summary: "checkpoint scout",
       files: [{ path: "a.txt", relevance: "file a" }, { path: "b.txt", relevance: "file b" }],
@@ -1229,6 +1268,7 @@ describe("controller release reliability", () => {
     });
     let implementationSegments = 0;
     vi.mocked(agents.runCheckpointableAgent).mockImplementation(async (options) => {
+      runnerCalls.push({ fn: "runCheckpointableAgent", role: options.role, model: options.model });
       workerCalls += 1;
       const kind = assignmentKind(options);
       await writeWorker(options);
@@ -1239,9 +1279,9 @@ describe("controller release reliability", () => {
         implementationSegments += 1;
         // The first implementation segment (unit a) ends in a checkpoint; the
         // resumed fresh session is a new runCheckpointableAgent call.
-        return { kind: "checkpoint", checkpoint: makeCheckpointFixture({ unitId: id }), context: { tokens: 70_000, contextWindow: 100_000, percent: 70 }, metrics };
+        return { kind: "checkpoint", checkpoint: makeCheckpointFixture({ unitId: id }), context: { tokens: 70_000, contextWindow: 100_000, percent: 70 }, metrics: runnerMetrics(options.model) };
       }
-      return { kind: "result", result: options.validate(makeWorkerReportFixture({ unitId: id, changedFiles: [`${id}.txt`] })), metrics };
+      return { kind: "result", result: options.validate(makeWorkerReportFixture({ unitId: id, changedFiles: [`${id}.txt`] })), metrics: runnerMetrics(options.model) };
     });
     const state = await run();
     expect(state.finalStatus, state.finalReason).toBe("accepted");
@@ -1257,9 +1297,23 @@ describe("controller release reliability", () => {
     for (const { prompt } of aPrompts) {
       expect(extractFactoryInput(prompt).repositoryEvidence).toEqual(aEvidence);
     }
+    // All three implementation segments (unit a original, unit a resumed,
+    // unit b) resolved the implementer role's ModelRef.
+    const implementerCalls = runnerCalls.filter((call) => call.fn === "runCheckpointableAgent" && call.role === "implementer");
+    expect(implementerCalls).toEqual([
+      { fn: "runCheckpointableAgent", role: "implementer", model: roleModels.implementer },
+      { fn: "runCheckpointableAgent", role: "implementer", model: roleModels.implementer },
+      { fn: "runCheckpointableAgent", role: "implementer", model: roleModels.implementer },
+    ]);
+    expect(state.telemetry?.filter((stage) => stage.stage === "qwen-implement").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
+      ["qwen-implement", "qwen", "prov-implementer/model-implementer", "completed"],
+      ["qwen-implement", "qwen", "prov-implementer/model-implementer", "completed"],
+      ["qwen-implement", "qwen", "prov-implementer/model-implementer", "completed"],
+    ]);
   });
 
   it("retains the unit-scoped evidence across a Jev-continuation fresh implementation worker session", async () => {
+    config.models = structuredClone(roleModels);
     scoutFactory = () => ({
       summary: "continuation scout",
       files: [{ path: "a.txt", relevance: "file a" }, { path: "b.txt", relevance: "file b" }],
@@ -1290,6 +1344,19 @@ describe("controller release reliability", () => {
     for (const { prompt } of aPrompts) {
       expect(extractFactoryInput(prompt).repositoryEvidence).toEqual(aEvidence);
     }
+    // All three implementation segments (unit a original, unit a Jev-continued,
+    // unit b) resolved the implementer role's ModelRef.
+    const implementerCalls = runnerCalls.filter((call) => call.fn === "runCheckpointableAgent" && call.role === "implementer");
+    expect(implementerCalls).toEqual([
+      { fn: "runCheckpointableAgent", role: "implementer", model: roleModels.implementer },
+      { fn: "runCheckpointableAgent", role: "implementer", model: roleModels.implementer },
+      { fn: "runCheckpointableAgent", role: "implementer", model: roleModels.implementer },
+    ]);
+    expect(state.telemetry?.filter((stage) => stage.stage === "qwen-implement").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
+      ["qwen-implement", "qwen", "prov-implementer/model-implementer", "completed"],
+      ["qwen-implement", "qwen", "prov-implementer/model-implementer", "completed"],
+      ["qwen-implement", "qwen", "prov-implementer/model-implementer", "completed"],
+    ]);
   });
 
   it("hands off distinct unit-scoped evidence per parallel unit without changing scheduling or worktree behavior", async () => {
@@ -1315,5 +1382,474 @@ describe("controller release reliability", () => {
       const payload = extractFactoryInput(implementationPrompts.find((p) => p.unitId === id)!.prompt);
       expect(payload.repositoryEvidence).toEqual(evidence);
     }
+  });
+
+  it("routes qwen-scout to models.scout and astra-architect/astra-review to their role ModelRefs", async () => {
+    config.models = structuredClone(roleModels);
+    const state = await run();
+    expect(state.finalStatus).toBe("accepted");
+    expect(runnerCalls.filter((call) => call.fn === "runAgent")).toEqual([
+      { fn: "runAgent", role: "scout", model: roleModels.scout },
+      { fn: "runAgent", role: "architect", model: roleModels.architect },
+      { fn: "runAgent", role: "reviewer", model: roleModels.reviewer },
+    ]);
+    expect(state.telemetry?.find((stage) => stage.stage === "qwen-scout")).toMatchObject({
+      stage: "qwen-scout", actor: "qwen", model: "prov-scout/model-scout", outcome: "completed",
+    });
+    expect(state.telemetry?.find((stage) => stage.stage === "astra-architect")).toMatchObject({
+      stage: "astra-architect", actor: "astra", model: "prov-architect/model-architect", outcome: "completed",
+    });
+    expect(state.telemetry?.find((stage) => stage.stage === "astra-review")).toMatchObject({
+      stage: "astra-review", actor: "astra", model: "prov-reviewer/model-reviewer", outcome: "completed",
+    });
+  });
+
+  it("routes qwen-rescout and the post-rescout astra-replan to their role ModelRefs", async () => {
+    config.models = structuredClone(roleModels);
+    vi.mocked(JevDecisionEngine.prototype.gatePlan).mockResolvedValueOnce({
+      action: "rescout", confidence: 1, planCompleteProbability: 1, implementationRisk: "low", rescoutFocus: "dependencies", replanFocus: "none", raw: {},
+    });
+    const started: Array<[string, string | undefined, string]> = [];
+    const state = await runFactory(cwd, "fixture reliability change", config, (event) => {
+      if (event.type === "started" && event.model !== undefined && event.model !== config.jev.model) {
+        started.push([event.stage, event.label, event.model]);
+      }
+    });
+    expect(state.finalStatus, state.finalReason).toBe("accepted");
+    expect(state.rescoutPasses).toBe(1);
+    // The rescout loop re-runs the scout and then the architect (replan); the
+    // run then proceeds to the initial astra-review as usual.
+    expect(runnerCalls.filter((call) => call.fn === "runAgent")).toEqual([
+      { fn: "runAgent", role: "scout", model: roleModels.scout },
+      { fn: "runAgent", role: "architect", model: roleModels.architect },
+      { fn: "runAgent", role: "scout", model: roleModels.scout },
+      { fn: "runAgent", role: "architect", model: roleModels.architect },
+      { fn: "runAgent", role: "reviewer", model: roleModels.reviewer },
+    ]);
+    // Started progress events carry the same role selection as the runners,
+    // including the planning-loop rescout and post-rescout replan stages.
+    expect(started).toEqual([
+      ["qwen-scout", undefined, "prov-scout/model-scout"],
+      ["astra-architect", undefined, "prov-architect/model-architect"],
+      ["qwen-rescout", "pass 1 · dependencies", "prov-scout/model-scout"],
+      ["astra-replan", "after rescout 1", "prov-architect/model-architect"],
+      ["qwen-implement", "implementation unit a", "prov-implementer/model-implementer"],
+      ["qwen-implement", "implementation unit b", "prov-implementer/model-implementer"],
+      ["astra-review", undefined, "prov-reviewer/model-reviewer"],
+    ]);
+    expect(state.telemetry?.find((stage) => stage.stage === "qwen-rescout")).toMatchObject({
+      stage: "qwen-rescout", label: "pass 1 · dependencies", actor: "qwen", model: "prov-scout/model-scout", outcome: "completed",
+    });
+    expect(state.telemetry?.find((stage) => stage.stage === "astra-replan")).toMatchObject({
+      stage: "astra-replan", label: "after rescout 1", actor: "astra", model: "prov-architect/model-architect", outcome: "completed",
+    });
+    expect(json(runDir(state), "architecture-after-rescout-1.json")).toEqual(state.architecture);
+  });
+
+  it("routes an explicit astra-replan to models.architect with the replan focus label", async () => {
+    config.models = structuredClone(roleModels);
+    vi.mocked(JevDecisionEngine.prototype.gatePlan).mockResolvedValueOnce({
+      action: "replan", confidence: 1, planCompleteProbability: 1, implementationRisk: "low", rescoutFocus: "none", replanFocus: "scope", raw: {},
+    });
+    const started: Array<[string, string | undefined, string]> = [];
+    const state = await runFactory(cwd, "fixture reliability change", config, (event) => {
+      if (event.type === "started" && event.model !== undefined && event.model !== config.jev.model) {
+        started.push([event.stage, event.label, event.model]);
+      }
+    });
+    expect(state.finalStatus, state.finalReason).toBe("accepted");
+    expect(state.replanPasses).toBe(1);
+    expect(runnerCalls.filter((call) => call.fn === "runAgent" && call.role === "architect")).toEqual([
+      { fn: "runAgent", role: "architect", model: roleModels.architect },
+      { fn: "runAgent", role: "architect", model: roleModels.architect },
+    ]);
+    // The explicit replan route reports the architect role's model on its
+    // started event with the replan focus label.
+    expect(started).toEqual([
+      ["qwen-scout", undefined, "prov-scout/model-scout"],
+      ["astra-architect", undefined, "prov-architect/model-architect"],
+      ["astra-replan", "pass 1 · scope", "prov-architect/model-architect"],
+      ["qwen-implement", "implementation unit a", "prov-implementer/model-implementer"],
+      ["qwen-implement", "implementation unit b", "prov-implementer/model-implementer"],
+      ["astra-review", undefined, "prov-reviewer/model-reviewer"],
+    ]);
+    expect(state.telemetry?.find((stage) => stage.stage === "astra-replan")).toMatchObject({
+      stage: "astra-replan", label: "pass 1 · scope", actor: "astra", model: "prov-architect/model-architect", outcome: "completed",
+    });
+    expect(json(runDir(state), "architecture-replan-1.json")).toEqual(state.architecture);
+  });
+
+  it("routes sequential qwen-implement workers to models.implementer", async () => {
+    config.models = structuredClone(roleModels);
+    const state = await run();
+    expect(state.finalStatus).toBe("accepted");
+    expect(runnerCalls.filter((call) => call.fn === "runCheckpointableAgent")).toEqual([
+      { fn: "runCheckpointableAgent", role: "implementer", model: roleModels.implementer },
+      { fn: "runCheckpointableAgent", role: "implementer", model: roleModels.implementer },
+    ]);
+    expect(state.telemetry?.filter((stage) => stage.stage === "qwen-implement").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
+      ["qwen-implement", "qwen", "prov-implementer/model-implementer", "completed"],
+      ["qwen-implement", "qwen", "prov-implementer/model-implementer", "completed"],
+    ]);
+  });
+
+  it("routes parallel qwen-implement workers to models.implementer", async () => {
+    config.models = structuredClone(roleModels);
+    config.parallelImplementation.enabled = true;
+    const state = await run();
+    expect(state.finalStatus).toBe("accepted");
+    expect(json(runDir(state), "parallel-batch-1.json").outcome).toBe("integrated");
+    expect(runnerCalls.filter((call) => call.fn === "runCheckpointableAgent")).toEqual([
+      { fn: "runCheckpointableAgent", role: "implementer", model: roleModels.implementer },
+      { fn: "runCheckpointableAgent", role: "implementer", model: roleModels.implementer },
+    ]);
+    expect(state.telemetry?.filter((stage) => stage.stage === "qwen-implement").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
+      ["qwen-implement", "qwen", "prov-implementer/model-implementer", "completed"],
+      ["qwen-implement", "qwen", "prov-implementer/model-implementer", "completed"],
+    ]);
+  });
+
+  it("routes the initial and post-repair astra-review to models.reviewer, never models.architect", async () => {
+    config.models = structuredClone(roleModels);
+    const requested: ReviewResult = {
+      summary: "changes requested",
+      verdict: "changes_requested",
+      findings: [{ severity: "minor", title: "Inconsistent naming", explanation: "b.txt content is inconsistent with the objective.", file: "b.txt" }],
+      testGaps: [], requirementCoverage: [],
+    };
+    reviewSequence = [requested, review];
+    vi.mocked(JevDecisionEngine.prototype.gateReview).mockResolvedValueOnce({ ...gate, action: "rework" });
+    const state = await run();
+    expect(state.finalStatus).toBe("accepted");
+    expect(state.reviewRepairPasses).toBe(1);
+    const reviewerCalls = runnerCalls.filter((call) => call.fn === "runAgent" && call.role === "reviewer");
+    expect(reviewerCalls).toEqual([
+      { fn: "runAgent", role: "reviewer", model: roleModels.reviewer },
+      { fn: "runAgent", role: "reviewer", model: roleModels.reviewer },
+    ]);
+    for (const call of reviewerCalls) expect(call.model).not.toEqual(roleModels.architect);
+    expect(state.telemetry?.filter((stage) => stage.stage === "astra-review").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
+      ["astra-review", "astra", "prov-reviewer/model-reviewer", "completed"],
+      ["astra-review", "astra", "prov-reviewer/model-reviewer", "completed"],
+    ]);
+  });
+
+  it("routes both deterministic and review qwen-repair workers to models.repairer, never models.implementer", async () => {
+    config.models = structuredClone(roleModels);
+    const check = 'node -e "process.exit(require(\'fs\').readFileSync(\'a.txt\',\'utf8\').startsWith(\'good\')?0:1)"';
+    config.verificationCommands = [check];
+    writeFileSync(join(cwd, "a.txt"), "good baseline\n");
+    await git(cwd, "add", "a.txt");
+    await git(cwd, "commit", "-m", "good baseline");
+    writeWorker = async (options) => {
+      const kind = assignmentKind(options);
+      if (kind === "implementation") {
+        const id = workerId(options.prompt);
+        writeFileSync(join(options.cwd, `${id}.txt`), id === "a" ? "bad implementation\n" : `implemented b\n`);
+      } else if (kind === "deterministic-repair") {
+        writeFileSync(join(options.cwd, "a.txt"), "good after deterministic repair\n");
+      } else {
+        writeFileSync(join(options.cwd, "b.txt"), "review repaired\n");
+      }
+    };
+    const requested: ReviewResult = {
+      summary: "changes requested",
+      verdict: "changes_requested",
+      findings: [{ severity: "minor", title: "Inconsistent naming", explanation: "b.txt content is inconsistent with the objective.", file: "b.txt" }],
+      testGaps: [], requirementCoverage: [],
+    };
+    reviewSequence = [requested, review];
+    vi.mocked(JevDecisionEngine.prototype.gateReview).mockResolvedValueOnce({ ...gate, action: "rework" });
+    const started: Array<[string, string | undefined, string]> = [];
+    const state = await runFactory(cwd, "fixture reliability change", config, (event) => {
+      if (event.type === "started" && event.model !== undefined && event.model !== config.jev.model) {
+        started.push([event.stage, event.label, event.model]);
+      }
+    });
+    expect(state.finalStatus).toBe("accepted");
+    expect(state.deterministicRepairPasses).toBe(1);
+    expect(state.reviewRepairPasses).toBe(1);
+    expect(runnerCalls.filter((call) => call.fn === "runCheckpointableAgent").map((call) => call.role)).toEqual([
+      "implementer", "implementer", "repairer", "repairer",
+    ]);
+    for (const call of runnerCalls.filter((call) => call.fn === "runCheckpointableAgent")) {
+      expect(call.model).toEqual(roleModels[call.role as "implementer" | "repairer"]);
+    }
+    for (const call of runnerCalls.filter((call) => call.fn === "runCheckpointableAgent" && call.role === "repairer")) {
+      expect(call.model).not.toEqual(roleModels.implementer);
+    }
+    expect(state.telemetry?.filter((stage) => stage.stage === "qwen-repair").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
+      ["qwen-repair", "qwen", "prov-repairer/model-repairer", "completed"],
+      ["qwen-repair", "qwen", "prov-repairer/model-repairer", "completed"],
+    ]);
+    // Both repair classes and the post-repair review keep their role models on
+    // started events.
+    expect(started).toEqual([
+      ["qwen-scout", undefined, "prov-scout/model-scout"],
+      ["astra-architect", undefined, "prov-architect/model-architect"],
+      ["qwen-implement", "implementation unit a", "prov-implementer/model-implementer"],
+      ["qwen-implement", "implementation unit b", "prov-implementer/model-implementer"],
+      ["qwen-repair", "deterministic repair 1", "prov-repairer/model-repairer"],
+      ["astra-review", undefined, "prov-reviewer/model-reviewer"],
+      ["qwen-repair", "review repair 1", "prov-repairer/model-repairer"],
+      ["astra-review", "after review repair 1", "prov-reviewer/model-reviewer"],
+    ]);
+  });
+
+  it("keeps the repairer ModelRef across a checkpointed deterministic repair resumption", async () => {
+    config.models = structuredClone(roleModels);
+    const check = 'node -e "process.exit(require(\'fs\').readFileSync(\'a.txt\',\'utf8\').startsWith(\'good\')?0:1)"';
+    config.verificationCommands = [check];
+    writeFileSync(join(cwd, "a.txt"), "good baseline\n");
+    await git(cwd, "add", "a.txt");
+    await git(cwd, "commit", "-m", "good baseline");
+    let deterministicSegments = 0;
+    writeWorker = async (options) => {
+      const kind = assignmentKind(options);
+      if (kind === "implementation") {
+        const id = workerId(options.prompt);
+        writeFileSync(join(options.cwd, `${id}.txt`), id === "a" ? "bad implementation\n" : `implemented b\n`);
+      } else if (kind === "deterministic-repair") {
+        deterministicSegments += 1;
+        // The first repair segment leaves the check failing; the resumed
+        // fresh session fixes it.
+        writeFileSync(join(options.cwd, "a.txt"), deterministicSegments === 1 ? "still failing after repair\n" : "good after resumption\n");
+      }
+    };
+    let deterministicRepairCheckpoint = 0;
+    vi.mocked(agents.runCheckpointableAgent).mockImplementation(async (options) => {
+      runnerCalls.push({ fn: "runCheckpointableAgent", role: options.role, model: options.model });
+      workerCalls += 1;
+      const kind = assignmentKind(options);
+      await writeWorker(options);
+      const id = kind === "implementation" ? workerId(options.prompt) : /"unitId": "([^"]+)"/.exec(options.prompt)?.[1] ?? "a";
+      workerAssignments.push({ kind, unitId: id });
+      if (kind === "deterministic-repair" && deterministicRepairCheckpoint === 0) {
+        deterministicRepairCheckpoint += 1;
+        // The first deterministic repair segment ends in a context checkpoint;
+        // the controller resumes a fresh worker for the same pass.
+        return { kind: "checkpoint", checkpoint: makeCheckpointFixture({ unitId: id }), context: { tokens: 70_000, contextWindow: 100_000, percent: 70 }, metrics: runnerMetrics(options.model) };
+      }
+      return { kind: "result", result: options.validate(makeWorkerReportFixture({ unitId: id, changedFiles: [`${id}.txt`] })), metrics: runnerMetrics(options.model) };
+    });
+    const started: Array<[string, string | undefined, string]> = [];
+    const state = await runFactory(cwd, "fixture reliability change", config, (event) => {
+      if (event.type === "started" && event.model !== undefined && event.model !== config.jev.model) {
+        started.push([event.stage, event.label, event.model]);
+      }
+    });
+    expect(state.finalStatus, state.finalReason).toBe("accepted");
+    expect(state.deterministicRepairPasses).toBe(1);
+    expect(state.reviewRepairPasses).toBe(0);
+    expect(deterministicRepairCheckpoint).toBe(1);
+    expect(deterministicSegments).toBe(2);
+    expect(workerCalls).toBe(4);
+    expect(state.checkpoints).toHaveLength(1);
+    expect(state.checkpoints?.[0]).toMatchObject({ stage: "qwen-repair", label: "deterministic repair 1", index: 1 });
+    const checkpoint = json(runDir(state), "checkpoint-deterministic-repair-1-1.json");
+    expect(checkpoint).toMatchObject({ stage: "qwen-repair", label: "deterministic repair 1", index: 1 });
+    // The repair worker's unit id is verification-repair-<pass>; the artifact
+    // stem remains deterministic-repair-<pass>.
+    expect(checkpoint.checkpoint).toMatchObject({ unitId: "verification-repair-1" });
+    // The resumed segment kept the repairer role's ModelRef.
+    expect(runnerCalls.filter((call) => call.fn === "runCheckpointableAgent")).toEqual([
+      { fn: "runCheckpointableAgent", role: "implementer", model: roleModels.implementer },
+      { fn: "runCheckpointableAgent", role: "implementer", model: roleModels.implementer },
+      { fn: "runCheckpointableAgent", role: "repairer", model: roleModels.repairer },
+      { fn: "runCheckpointableAgent", role: "repairer", model: roleModels.repairer },
+    ]);
+    expect(state.telemetry?.filter((stage) => stage.stage === "qwen-repair").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
+      ["qwen-repair", "qwen", "prov-repairer/model-repairer", "completed"],
+      ["qwen-repair", "qwen", "prov-repairer/model-repairer", "completed"],
+    ]);
+    // The resumed repair segment starts under the same repairer model.
+    expect(started).toEqual([
+      ["qwen-scout", undefined, "prov-scout/model-scout"],
+      ["astra-architect", undefined, "prov-architect/model-architect"],
+      ["qwen-implement", "implementation unit a", "prov-implementer/model-implementer"],
+      ["qwen-implement", "implementation unit b", "prov-implementer/model-implementer"],
+      ["qwen-repair", "deterministic repair 1", "prov-repairer/model-repairer"],
+      ["qwen-repair", "deterministic repair 1 · resume 1", "prov-repairer/model-repairer"],
+      ["astra-review", undefined, "prov-reviewer/model-reviewer"],
+    ]);
+    // The persisted StageTelemetry records the same role selection, including
+    // the resumed repair segment.
+    expect(json(runDir(state), "telemetry.json")
+      .filter((stage: any) => stage.model !== undefined && stage.model !== config.jev.model)
+      .map((stage: any) => [stage.stage, stage.label, stage.model, stage.outcome]))
+      .toEqual([
+        ["qwen-scout", undefined, "prov-scout/model-scout", "completed"],
+        ["astra-architect", undefined, "prov-architect/model-architect", "completed"],
+        ["qwen-implement", "implementation unit a", "prov-implementer/model-implementer", "completed"],
+        ["qwen-implement", "implementation unit b", "prov-implementer/model-implementer", "completed"],
+        ["qwen-repair", "deterministic repair 1", "prov-repairer/model-repairer", "completed"],
+        ["qwen-repair", "deterministic repair 1 · resume 1", "prov-repairer/model-repairer", "completed"],
+        ["astra-review", undefined, "prov-reviewer/model-reviewer", "completed"],
+      ]);
+    expect(json(runDir(state), "verification-after-deterministic-repair-1.json").passed).toBe(true);
+  });
+
+  it("keeps the repairer ModelRef across a Jev-continuation review repair resumption", async () => {
+    config.models = structuredClone(roleModels);
+    writeWorker = async (options) => {
+      const kind = assignmentKind(options);
+      if (kind === "implementation") {
+        const id = workerId(options.prompt);
+        writeFileSync(join(options.cwd, `${id}.txt`), `implemented ${id}\n`);
+      } else {
+        writeFileSync(join(options.cwd, "b.txt"), "review repaired\n");
+      }
+    };
+    const requested: ReviewResult = {
+      summary: "changes requested",
+      verdict: "changes_requested",
+      findings: [{ severity: "minor", title: "Inconsistent naming", explanation: "b.txt content is inconsistent with the objective.", file: "b.txt" }],
+      testGaps: [], requirementCoverage: [],
+    };
+    reviewSequence = [requested, review];
+    vi.mocked(JevDecisionEngine.prototype.gateReview).mockResolvedValueOnce({ ...gate, action: "rework" });
+    vi.mocked(JevDecisionEngine.prototype.gateWorker)
+      .mockResolvedValueOnce({ disposition: "ready", confidence: 1, raw: {} })
+      .mockResolvedValueOnce({ disposition: "ready", confidence: 1, raw: {} })
+      .mockResolvedValueOnce({ disposition: "continue", confidence: 1, raw: {} })
+      .mockResolvedValueOnce({ disposition: "ready", confidence: 1, raw: {} });
+    const started: Array<[string, string | undefined, string]> = [];
+    const state = await runFactory(cwd, "fixture reliability change", config, (event) => {
+      if (event.type === "started" && event.model !== undefined && event.model !== config.jev.model) {
+        started.push([event.stage, event.label, event.model]);
+      }
+    });
+    expect(state.finalStatus, state.finalReason).toBe("accepted");
+    expect(state.deterministicRepairPasses).toBe(0);
+    expect(state.reviewRepairPasses).toBe(1);
+    expect(state.workerContinuations).toHaveLength(1);
+    expect(state.workerContinuations?.[0]).toMatchObject({
+      phase: "repair", label: "review repair 1", pass: 1, priorDisposition: "continue",
+      repairClass: "review", repairPass: 1,
+    });
+    const continuation = json(runDir(state), "continuation-review-repair-1-1.json");
+    expect(continuation).toMatchObject({
+      phase: "repair", pass: 1, priorDisposition: "continue",
+      repairClass: "review", repairPass: 1,
+    });
+    // The continuation segment kept the repairer role's ModelRef.
+    expect(runnerCalls.filter((call) => call.fn === "runCheckpointableAgent")).toEqual([
+      { fn: "runCheckpointableAgent", role: "implementer", model: roleModels.implementer },
+      { fn: "runCheckpointableAgent", role: "implementer", model: roleModels.implementer },
+      { fn: "runCheckpointableAgent", role: "repairer", model: roleModels.repairer },
+      { fn: "runCheckpointableAgent", role: "repairer", model: roleModels.repairer },
+    ]);
+    expect(state.telemetry?.filter((stage) => stage.stage === "qwen-repair").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
+      ["qwen-repair", "qwen", "prov-repairer/model-repairer", "completed"],
+      ["qwen-repair", "qwen", "prov-repairer/model-repairer", "completed"],
+    ]);
+    // The continuation segment and the post-repair review keep their role
+    // models on started events.
+    expect(started).toEqual([
+      ["qwen-scout", undefined, "prov-scout/model-scout"],
+      ["astra-architect", undefined, "prov-architect/model-architect"],
+      ["qwen-implement", "implementation unit a", "prov-implementer/model-implementer"],
+      ["qwen-implement", "implementation unit b", "prov-implementer/model-implementer"],
+      ["astra-review", undefined, "prov-reviewer/model-reviewer"],
+      ["qwen-repair", "review repair 1", "prov-repairer/model-repairer"],
+      ["qwen-repair", "review repair 1 · continue 1", "prov-repairer/model-repairer"],
+      ["astra-review", "after review repair 1", "prov-reviewer/model-reviewer"],
+    ]);
+    // The persisted StageTelemetry records the same role selection, including
+    // the continued repair segment and the post-repair review.
+    expect(json(runDir(state), "telemetry.json")
+      .filter((stage: any) => stage.model !== undefined && stage.model !== config.jev.model)
+      .map((stage: any) => [stage.stage, stage.label, stage.model, stage.outcome]))
+      .toEqual([
+        ["qwen-scout", undefined, "prov-scout/model-scout", "completed"],
+        ["astra-architect", undefined, "prov-architect/model-architect", "completed"],
+        ["qwen-implement", "implementation unit a", "prov-implementer/model-implementer", "completed"],
+        ["qwen-implement", "implementation unit b", "prov-implementer/model-implementer", "completed"],
+        ["astra-review", undefined, "prov-reviewer/model-reviewer", "completed"],
+        ["qwen-repair", "review repair 1", "prov-repairer/model-repairer", "completed"],
+        ["qwen-repair", "review repair 1 · continue 1", "prov-repairer/model-repairer", "completed"],
+        ["astra-review", "after review repair 1", "prov-reviewer/model-reviewer", "completed"],
+      ]);
+  });
+
+  it("reports each role's provider/model on started progress events and completed telemetry, including resumed segments", async () => {
+    config.models = structuredClone(roleModels);
+    let implementationCheckpoint = 0;
+    vi.mocked(agents.runCheckpointableAgent).mockImplementation(async (options) => {
+      runnerCalls.push({ fn: "runCheckpointableAgent", role: options.role, model: options.model });
+      workerCalls += 1;
+      await writeWorker(options);
+      const id = workerId(options.prompt);
+      workerAssignments.push({ kind: "implementation", unitId: id });
+      if (implementationCheckpoint === 0) {
+        implementationCheckpoint += 1;
+        // The first implementation segment (unit a) ends in a checkpoint; the
+        // resumed fresh session is a new runCheckpointableAgent call.
+        return { kind: "checkpoint", checkpoint: makeCheckpointFixture({ unitId: id }), context: { tokens: 70_000, contextWindow: 100_000, percent: 70 }, metrics: runnerMetrics(options.model) };
+      }
+      return { kind: "result", result: options.validate(makeWorkerReportFixture({ unitId: id, changedFiles: [`${id}.txt`] })), metrics: runnerMetrics(options.model) };
+    });
+    const started: Array<[string, string]> = [];
+    const state = await runFactory(cwd, "fixture reliability change", config, (event) => {
+      if (event.type === "started" && event.model !== undefined && event.model !== config.jev.model) {
+        started.push([event.stage, event.model]);
+      }
+    });
+    expect(state.finalStatus, state.finalReason).toBe("accepted");
+    // Model-backed stages, in execution order, each report the selected
+    // role's configured provider/model — including the resumed segment.
+    const expected: Array<[string, string]> = [
+      ["qwen-scout", "prov-scout/model-scout"],
+      ["astra-architect", "prov-architect/model-architect"],
+      ["qwen-implement", "prov-implementer/model-implementer"],
+      ["qwen-implement", "prov-implementer/model-implementer"],
+      ["qwen-implement", "prov-implementer/model-implementer"],
+      ["astra-review", "prov-reviewer/model-reviewer"],
+    ];
+    expect(started).toEqual(expected);
+    expect((state.telemetry ?? [])
+      .filter((stage) => stage.model !== undefined && stage.model !== config.jev.model)
+      .map((stage) => [stage.stage, stage.model, stage.outcome]))
+      .toEqual(expected.map(([stage, model]) => [stage, model, "completed"]));
+    // The persisted telemetry matches the same role selection, including the
+    // resumed implementation segment.
+    expect(json(runDir(state), "telemetry.json")
+      .filter((stage: any) => stage.model !== undefined && stage.model !== config.jev.model)
+      .map((stage: any) => [stage.stage, stage.label, stage.model, stage.outcome]))
+      .toEqual([
+        ["qwen-scout", undefined, "prov-scout/model-scout", "completed"],
+        ["astra-architect", undefined, "prov-architect/model-architect", "completed"],
+        ["qwen-implement", "implementation unit a", "prov-implementer/model-implementer", "completed"],
+        ["qwen-implement", "implementation unit a · resume 1", "prov-implementer/model-implementer", "completed"],
+        ["qwen-implement", "implementation unit b", "prov-implementer/model-implementer", "completed"],
+        ["astra-review", undefined, "prov-reviewer/model-reviewer", "completed"],
+      ]);
+  });
+
+  it("reports the runner's actual metrics.model in completed telemetry while started events keep the configured model", async () => {
+    config.models = structuredClone(roleModels);
+    vi.mocked(agents.runAgent).mockImplementation(async (options) => ({
+      result: options.validate(
+        options.role === "scout" ? scoutFactory()
+          : options.role === "architect" ? architecture
+          : reviewSequence[Math.min(reviewCalls++, reviewSequence.length - 1)],
+      ),
+      // The scout runner reports a model independent of the configured
+      // ModelRef, so telemetry must follow the actual metrics.
+      metrics: options.role === "scout"
+        ? { model: "runtime-resolved/scout-model", cost: 0, tokens: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, total: 3 } }
+        : runnerMetrics(options.model),
+    }));
+    const started: Array<[string, string | undefined]> = [];
+    const state = await runFactory(cwd, "fixture reliability change", config, (event) => {
+      if (event.type === "started") started.push([event.stage, event.model]);
+    });
+    expect(state.finalStatus).toBe("accepted");
+    expect(started.find(([stage]) => stage === "qwen-scout")).toEqual(["qwen-scout", "prov-scout/model-scout"]);
+    const scoutTelemetry = state.telemetry?.find((stage) => stage.stage === "qwen-scout");
+    expect(scoutTelemetry?.model).toBe("runtime-resolved/scout-model");
+    expect(scoutTelemetry?.model).not.toBe("prov-scout/model-scout");
+    expect(scoutTelemetry?.model).not.toBe("qwen");
+    expect(scoutTelemetry?.tokens).toEqual({ input: 1, output: 2, cacheRead: 0, cacheWrite: 0, total: 3 });
   });
 }, 30_000);

@@ -133,19 +133,46 @@ Project-specific configuration lives at:
 .pi/software-factory.json
 ```
 
-Start from [software-factory.example.json](software-factory.example.json). The built-in defaults include:
+Start from [software-factory.example.json](software-factory.example.json).
+
+Models are selected per semantic role through the required `models` block:
+
+- `scout` — repository scouting (read-only)
+- `architect` — architecture and replanning (read-only)
+- `implementer` — implementation workers
+- `reviewer` — independent review (read-only)
+- `repairer` — deterministic and review repair
+
+The built-in defaults assign the local Qwen model to `scout`, `implementer`, and `repairer`, and Astra to `architect` and `reviewer`:
 
 ```json
 {
-  "qwen": {
-    "provider": "unsloth-local",
-    "model": "unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M",
-    "thinking": "medium"
-  },
-  "astra": {
-    "provider": "openai-codex",
-    "model": "gpt-6-astra",
-    "thinking": "high"
+  "models": {
+    "scout": {
+      "provider": "unsloth-local",
+      "model": "unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M",
+      "thinking": "medium"
+    },
+    "architect": {
+      "provider": "openai-codex",
+      "model": "gpt-6-astra",
+      "thinking": "high"
+    },
+    "implementer": {
+      "provider": "unsloth-local",
+      "model": "unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M",
+      "thinking": "medium"
+    },
+    "reviewer": {
+      "provider": "openai-codex",
+      "model": "gpt-6-astra",
+      "thinking": "high"
+    },
+    "repairer": {
+      "provider": "unsloth-local",
+      "model": "unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M",
+      "thinking": "medium"
+    }
   },
   "jev": {
     "model": "jev-latest",
@@ -177,6 +204,8 @@ Start from [software-factory.example.json](software-factory.example.json). The b
   "workerMaxRuntimeMinutes": 20
 }
 ```
+
+If no configuration file exists, or a configuration omits `models` entirely, the built-in defaults apply. If you supply `models` explicitly, the block must be complete: all five roles, each with a non-empty `provider` and `model` and a `thinking` of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. The top-level `qwen` and `astra` fields are obsolete and are rejected; replace them with the `models` block.
 
 Configure `verificationCommands` for the target repository, for example:
 

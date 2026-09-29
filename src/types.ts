@@ -9,6 +9,18 @@ export interface ModelRef {
   thinking: ThinkingLevel;
 }
 
+/**
+ * The five semantic factory roles, each bound to an explicit ModelRef.
+ * Role keys match AgentRole in agent-runner.ts.
+ */
+export interface ModelRoles {
+  scout: ModelRef;
+  architect: ModelRef;
+  implementer: ModelRef;
+  reviewer: ModelRef;
+  repairer: ModelRef;
+}
+
 export interface TokenUsageSnapshot {
   input: number;
   output: number;
@@ -129,8 +141,7 @@ export type FactoryProgressEvent =
     };
 
 export interface FactoryConfig {
-  qwen: ModelRef;
-  astra: ModelRef;
+  models: ModelRoles;
   jev: {
     model: string;
     minChoiceConfidence: number;

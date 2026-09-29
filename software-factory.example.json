@@ -1,13 +1,30 @@
 {
-  "qwen": {
-    "provider": "unsloth-local",
-    "model": "unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M",
-    "thinking": "medium"
-  },
-  "astra": {
-    "provider": "openai-codex",
-    "model": "gpt-6-astra",
-    "thinking": "high"
+  "models": {
+    "scout": {
+      "provider": "unsloth-local",
+      "model": "unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M",
+      "thinking": "medium"
+    },
+    "architect": {
+      "provider": "openai-codex",
+      "model": "gpt-6-astra",
+      "thinking": "high"
+    },
+    "implementer": {
+      "provider": "unsloth-local",
+      "model": "unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M",
+      "thinking": "medium"
+    },
+    "reviewer": {
+      "provider": "openai-codex",
+      "model": "gpt-6-astra",
+      "thinking": "high"
+    },
+    "repairer": {
+      "provider": "unsloth-local",
+      "model": "unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M",
+      "thinking": "medium"
+    }
   },
   "jev": {
     "model": "jev-latest",

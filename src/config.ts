@@ -1,17 +1,47 @@
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import type { FactoryConfig } from "./types.js";
+import type { FactoryConfig, ThinkingLevel } from "./types.js";
+
+export const MODEL_ROLES = ["scout", "architect", "implementer", "reviewer", "repairer"] as const;
+export type ModelRole = (typeof MODEL_ROLES)[number];
+
+const THINKING_LEVELS: readonly ThinkingLevel[] = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+];
 
 export const DEFAULT_CONFIG: FactoryConfig = {
-  qwen: {
-    provider: "unsloth-local",
-    model: "unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M",
-    thinking: "medium",
-  },
-  astra: {
-    provider: "openai-codex",
-    model: "gpt-6-astra",
-    thinking: "high",
+  models: {
+    scout: {
+      provider: "unsloth-local",
+      model: "unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M",
+      thinking: "medium",
+    },
+    architect: {
+      provider: "openai-codex",
+      model: "gpt-6-astra",
+      thinking: "high",
+    },
+    implementer: {
+      provider: "unsloth-local",
+      model: "unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M",
+      thinking: "medium",
+    },
+    reviewer: {
+      provider: "openai-codex",
+      model: "gpt-6-astra",
+      thinking: "high",
+    },
+    repairer: {
+      provider: "unsloth-local",
+      model: "unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M",
+      thinking: "medium",
+    },
   },
   jev: {
     model: "jev-latest",
@@ -45,6 +75,50 @@ export const DEFAULT_CONFIG: FactoryConfig = {
   maxDiffCharsForReview: 120_000,
 };
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function validateModelRef(role: ModelRole, ref: unknown): void {
+  if (!isPlainRecord(ref)) {
+    throw new Error(
+      `Invalid models.${role}: expected an object with provider, model, and thinking fields.`,
+    );
+  }
+  if (typeof ref.provider !== "string" || ref.provider.trim() === "") {
+    throw new Error(`Invalid models.${role}.provider: expected a non-empty string.`);
+  }
+  if (typeof ref.model !== "string" || ref.model.trim() === "") {
+    throw new Error(`Invalid models.${role}.model: expected a non-empty string.`);
+  }
+  if (typeof ref.thinking !== "string" || !THINKING_LEVELS.includes(ref.thinking as ThinkingLevel)) {
+    throw new Error(
+      `Invalid models.${role}.thinking: expected one of ${THINKING_LEVELS.join(", ")}.`,
+    );
+  }
+}
+
+/**
+ * Validates a complete five-role models block. Runs on an explicitly supplied
+ * block before deepMerge (so merging cannot conceal missing entries) and on
+ * the effective block afterwards.
+ */
+function validateModelsBlock(models: unknown): void {
+  if (!isPlainRecord(models)) {
+    throw new Error(
+      `Invalid models: expected an object with ${MODEL_ROLES.join(", ")} ModelRef entries.`,
+    );
+  }
+  for (const role of MODEL_ROLES) {
+    if (models[role] === undefined) {
+      throw new Error(
+        `Invalid models.${role}: expected a ModelRef with provider, model, and thinking fields.`,
+      );
+    }
+    validateModelRef(role, models[role]);
+  }
+}
+
 function deepMerge<T extends Record<string, any>>(base: T, override: Partial<T>): T {
   const out: Record<string, any> = { ...base };
   for (const [key, value] of Object.entries(override)) {
@@ -62,6 +136,24 @@ export function loadConfig(cwd: string): FactoryConfig {
   if (!existsSync(configPath)) return structuredClone(DEFAULT_CONFIG);
 
   const parsed = JSON.parse(readFileSync(configPath, "utf8"));
+
+  // The qwen/astra buckets were replaced by the required models.<role> block.
+  // Reject them explicitly so an obsolete local configuration cannot silently
+  // select the shipped defaults; there is no code-side migration for them.
+  for (const legacy of ["qwen", "astra"] as const) {
+    if (legacy in parsed) {
+      throw new Error(
+        `Invalid configuration: the top-level "${legacy}" field is obsolete and no longer selects a model. ` +
+          `Replace it with the required models block (${MODEL_ROLES.join(", ")}) in .pi/software-factory.json.`,
+      );
+    }
+  }
+
+  // Validate an explicitly supplied models block before deepMerge so a
+  // partial block cannot be completed silently from the defaults.
+  if ("models" in parsed) {
+    validateModelsBlock(parsed.models);
+  }
 
   // v0.9 split the shared repair budget into dedicated deterministic/review
   // budgets. Legacy configs carrying only maxRepairPasses migrate to setting
@@ -83,6 +175,10 @@ export function loadConfig(cwd: string): FactoryConfig {
   }
 
   const config = deepMerge(structuredClone(DEFAULT_CONFIG), parsed);
+
+  // Validate the effective models block as well, now that merging has
+  // inherited any roles the user did not supply.
+  validateModelsBlock(config.models);
 
   // v0.3 and earlier recommended .okf/work even though run artifacts are ordinary
   // JSON/JSONL rather than OKF documents. Treat that exact legacy default as a

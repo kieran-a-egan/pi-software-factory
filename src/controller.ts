@@ -379,6 +379,10 @@ export async function runFactory(
     workerCwd?: string;
     abortSignal?: AbortSignal;
   }): Promise<WorkerReport | null> => {
+    // Both recovery loops (Jev continuations and checkpoint resumptions) re-enter
+    // this helper with the same role, so resolving the ModelRef once from the
+    // semantic role keeps every segment on the original role's model.
+    const roleModel = config.models[input.role];
     let prompt = input.basePrompt;
     let checkpointCount = 0;
 
@@ -394,12 +398,12 @@ export async function runFactory(
             stage: input.stage,
             label: segmentLabel,
             actor: "qwen",
-            model: `${config.qwen.provider}/${config.qwen.model}`,
+            model: `${roleModel.provider}/${roleModel.model}`,
           },
           () => runCheckpointableAgent({
             role: input.role,
             cwd: input.workerCwd ?? cwd,
-            model: config.qwen,
+            model: roleModel,
             systemPrompt: input.systemPrompt,
             prompt,
             modelRuntime,
@@ -673,11 +677,11 @@ export async function runFactory(
   }
 
   const scoutRun = await runStage(
-    { stage: "qwen-scout", actor: "qwen", model: `${config.qwen.provider}/${config.qwen.model}` },
+    { stage: "qwen-scout", actor: "qwen", model: `${config.models.scout.provider}/${config.models.scout.model}` },
     () => runAgent({
       role: "scout",
       cwd,
-      model: config.qwen,
+      model: config.models.scout,
       systemPrompt: SCOUT_SYSTEM,
       prompt: scoutPrompt(objective, projectContext),
       modelRuntime,
@@ -690,11 +694,11 @@ export async function runFactory(
   store.write("evidence.json", state.scout);
 
   const architectureRun = await runStage(
-    { stage: "astra-architect", actor: "astra", model: `${config.astra.provider}/${config.astra.model}` },
+    { stage: "astra-architect", actor: "astra", model: `${config.models.architect.provider}/${config.models.architect.model}` },
     () => runAgent({
       role: "architect",
       cwd,
-      model: config.astra,
+      model: config.models.architect,
       systemPrompt: ARCHITECT_SYSTEM,
       prompt: architectPrompt({ objective, intake: state.intake!, projectContext, evidence: state.scout! }),
       modelRuntime,
@@ -734,11 +738,11 @@ export async function runFactory(
     gate: NonNullable<typeof state.planGate>;
   }) => {
     const run = await runStage(
-      { stage: "astra-replan", label: input.label, actor: "astra", model: `${config.astra.provider}/${config.astra.model}` },
+      { stage: "astra-replan", label: input.label, actor: "astra", model: `${config.models.architect.provider}/${config.models.architect.model}` },
       () => runAgent({
         role: "architect",
         cwd,
-        model: config.astra,
+        model: config.models.architect,
         systemPrompt: ARCHITECT_SYSTEM,
         prompt: replanPrompt({
           objective,
@@ -796,11 +800,11 @@ export async function runFactory(
       const pass = state.rescoutPasses;
       const previousArchitecture = state.architecture;
       const supplementalRun = await runStage(
-        { stage: "qwen-rescout", label: `pass ${pass} · ${gate.rescoutFocus}`, actor: "qwen", model: `${config.qwen.provider}/${config.qwen.model}` },
+        { stage: "qwen-rescout", label: `pass ${pass} · ${gate.rescoutFocus}`, actor: "qwen", model: `${config.models.scout.provider}/${config.models.scout.model}` },
         () => runAgent({
           role: "scout",
           cwd,
-          model: config.qwen,
+          model: config.models.scout,
           systemPrompt: SCOUT_SYSTEM,
           prompt: rescoutPrompt({
             objective,
@@ -1335,11 +1339,11 @@ export async function runFactory(
       : verification.diff;
 
     const reviewRun = await runStage(
-      { stage: "astra-review", label, actor: "astra", model: `${config.astra.provider}/${config.astra.model}` },
+      { stage: "astra-review", label, actor: "astra", model: `${config.models.reviewer.provider}/${config.models.reviewer.model}` },
       () => runAgent({
         role: "reviewer",
         cwd,
-        model: config.astra,
+        model: config.models.reviewer,
         systemPrompt: REVIEWER_SYSTEM,
         prompt: reviewerPrompt({
           objective,
