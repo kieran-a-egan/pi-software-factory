@@ -1,0 +1,14 @@
+{
+  "id": "autonomy-v1-009",
+  "schemaVersion": "v1",
+  "kind": "solvable",
+  "category": "bug-fix",
+  "objective": "Modify fixture/index.ts so that the exported function sliceInclusive<T>(values: readonly T[], start: number, end: number): T[] includes the element at the supplied end index in the result (for example sliceInclusive(['a', 'b', 'c', 'd'], 1, 2) returns ['b', 'c'] instead of ['b']), and when start === end and that index exists, the result is that single element, while preserving the existing behavior that the start index is inclusive, elements outside the requested bounds are excluded, beyond-length ends are handled as in Array.prototype.slice, the generic typing, and the guarantees that the result is a fresh array distinct from the input and that the supplied array is never mutated. Do not change the exported signature of sliceInclusive, and do not mutate the supplied array.",
+  "expectedTerminalOutcome": "ACCEPTED",
+  "humanImplementationInterventionAllowed": false,
+  "assertionIdentifiers": [
+    "inclusive-end",
+    "existing-slice-behavior",
+    "fixture-typecheck"
+  ]
+}

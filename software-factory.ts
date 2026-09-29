@@ -4,7 +4,7 @@ import { loadConfig } from "./src/config.js";
 import { runFactory } from "./src/controller.js";
 import type { ContextUsageSnapshot, FactoryProgressEvent, FactoryRunState, StageTelemetry, TokenUsageSnapshot } from "./src/types.js";
 
-const VERSION = "0.8.2";
+const VERSION = "0.9.0";
 const ENTRY_TYPE = "software-factory";
 
 type TranscriptEntry =
@@ -151,7 +151,9 @@ function decisionSummary(record: Record<string, any>): string {
   const pass = typeof record.pass === "number"
     ? ` · pass ${record.pass}`
     : typeof record.repairPass === "number"
-      ? ` · repair ${record.repairPass}`
+      ? (record.repairClass === "deterministic" || record.repairClass === "review")
+        ? ` · ${record.repairClass}-repair ${record.repairPass}`
+        : ` · repair ${record.repairPass}`
       : "";
   const routed = decision.action ?? decision.disposition ?? decision.requirementClarity;
   const confidence = typeof decision.confidence === "number"

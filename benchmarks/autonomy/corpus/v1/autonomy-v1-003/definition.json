@@ -1,0 +1,14 @@
+{
+  "id": "autonomy-v1-003",
+  "schemaVersion": "v1",
+  "kind": "solvable",
+  "category": "input-validation",
+  "objective": "Modify fixture/index.ts so that the exported function parsePort(value: string): number | undefined rejects the string '0' by returning undefined for it, while preserving all existing behavior: '1', '80', '443', '3000', and '65535' return their exact decimal values; '65536' (above the port upper bound), '-1' (negative), '1.5' (non-integer), ' 80' and '80 ' (surrounding whitespace), the empty string, and any nonnumeric string all return undefined; and parsing remains strict, case-sensitive, and without trimming. Do not change the exported signature of parsePort.",
+  "expectedTerminalOutcome": "ACCEPTED",
+  "humanImplementationInterventionAllowed": false,
+  "assertionIdentifiers": [
+    "zero-port-rejected",
+    "existing-port-behavior",
+    "fixture-typecheck"
+  ]
+}

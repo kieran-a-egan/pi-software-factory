@@ -1,0 +1,14 @@
+{
+  "id": "autonomy-v1-007",
+  "schemaVersion": "v1",
+  "kind": "solvable",
+  "category": "bug-fix",
+  "objective": "Modify fixture/index.ts so that the exported function stripPrefix(value: string, prefix: string): string removes only one leading prefix from `value`: for example stripPrefix('prevalue', 'pre') returns 'value' while stripPrefix('valuepre', 'pre') returns 'valuepre' unchanged. Preserve exact case-sensitive matching, no trimming or normalization of either argument, the unchanged empty-prefix behavior, and the exported signature of stripPrefix.",
+  "expectedTerminalOutcome": "ACCEPTED",
+  "humanImplementationInterventionAllowed": false,
+  "assertionIdentifiers": [
+    "prefix-position",
+    "existing-strip-behavior",
+    "fixture-typecheck"
+  ]
+}

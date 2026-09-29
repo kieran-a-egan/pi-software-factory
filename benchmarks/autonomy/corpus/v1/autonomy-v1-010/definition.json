@@ -1,0 +1,14 @@
+{
+  "id": "autonomy-v1-010",
+  "schemaVersion": "v1",
+  "kind": "solvable",
+  "category": "bug-fix",
+  "objective": "Modify fixture/index.ts so that the exported function chunk<T>(values: readonly T[], size: number): T[][] retains the final partial chunk when the input length is not a multiple of size (for example chunk([1, 2, 3, 4, 5], 2) returns [[1, 2], [3, 4], [5]] instead of [[1, 2], [3, 4]]), while preserving the existing behavior that complete chunks are emitted in order, retained elements preserve their identity and original order, the returned outer array and every inner chunk are fresh arrays distinct from the input and from each other, the supplied array is never mutated, an input whose length is a multiple of size yields no extra empty chunk, and the generic typing. Do not change the exported signature of chunk, and do not mutate the supplied array.",
+  "expectedTerminalOutcome": "ACCEPTED",
+  "humanImplementationInterventionAllowed": false,
+  "assertionIdentifiers": [
+    "partial-final-chunk",
+    "existing-chunk-behavior",
+    "fixture-typecheck"
+  ]
+}

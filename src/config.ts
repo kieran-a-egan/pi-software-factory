@@ -38,7 +38,8 @@ export const DEFAULT_CONFIG: FactoryConfig = {
   contextMaxBytes: 180_000,
   requireCleanWorkingTree: true,
   verificationCommands: [],
-  maxRepairPasses: 1,
+  maxDeterministicRepairPasses: 1,
+  maxReviewRepairPasses: 2,
   maxWorkerContinuationPasses: 2,
   workerMaxRuntimeMinutes: 20,
   maxDiffCharsForReview: 120_000,
@@ -61,6 +62,26 @@ export function loadConfig(cwd: string): FactoryConfig {
   if (!existsSync(configPath)) return structuredClone(DEFAULT_CONFIG);
 
   const parsed = JSON.parse(readFileSync(configPath, "utf8"));
+
+  // v0.9 split the shared repair budget into dedicated deterministic/review
+  // budgets. Legacy configs carrying only maxRepairPasses migrate to setting
+  // both dedicated limits to the same value; mixing the legacy key with either
+  // dedicated key is a configuration error rather than a silent precedence rule.
+  if ("maxRepairPasses" in parsed) {
+    if ("maxDeterministicRepairPasses" in parsed || "maxReviewRepairPasses" in parsed) {
+      throw new Error(
+        "Invalid configuration: legacy maxRepairPasses cannot be combined with maxDeterministicRepairPasses or maxReviewRepairPasses. Remove maxRepairPasses and set the dedicated limits explicitly.",
+      );
+    }
+    const legacy = parsed.maxRepairPasses;
+    if (!Number.isSafeInteger(legacy) || legacy < 0) {
+      throw new Error("Invalid maxRepairPasses: expected a non-negative integer.");
+    }
+    parsed.maxDeterministicRepairPasses = legacy;
+    parsed.maxReviewRepairPasses = legacy;
+    delete parsed.maxRepairPasses;
+  }
+
   const config = deepMerge(structuredClone(DEFAULT_CONFIG), parsed);
 
   // v0.3 and earlier recommended .okf/work even though run artifacts are ordinary
@@ -101,6 +122,13 @@ export function loadConfig(cwd: string): FactoryConfig {
   }
   if (!Number.isSafeInteger(parallel.maxParallelUnits) || parallel.maxParallelUnits < 1) {
     throw new Error("Invalid parallelImplementation.maxParallelUnits: expected an integer >= 1.");
+  }
+
+  if (!Number.isSafeInteger(config.maxDeterministicRepairPasses) || config.maxDeterministicRepairPasses < 0) {
+    throw new Error("Invalid maxDeterministicRepairPasses: expected a non-negative integer.");
+  }
+  if (!Number.isSafeInteger(config.maxReviewRepairPasses) || config.maxReviewRepairPasses < 0) {
+    throw new Error("Invalid maxReviewRepairPasses: expected a non-negative integer.");
   }
 
   if (!Number.isSafeInteger(config.maxWorkerContinuationPasses) || config.maxWorkerContinuationPasses < 0) {

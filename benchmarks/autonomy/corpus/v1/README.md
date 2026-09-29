@@ -1,0 +1,123 @@
+# Autonomy benchmark corpus — v1
+
+This directory is a plain, frozen corpus of tiny solvable TypeScript benchmark
+cases. **This tranche contains exactly ten cases, `autonomy-v1-001` through
+`autonomy-v1-010`.** No other cases, shared runners, or helpers live here.
+
+## Layout
+
+Each case occupies its own directory named after its stable identifier:
+
+```
+v1/
+  <case-id>/
+    definition.json   # the BenchmarkCaseDefinition (schema v1)
+    assert.ts         # the case-specific, manually invoked checks
+    fixture/
+      index.ts        # the pristine starting candidate source
+      tsconfig.json   # the fixture's standalone strict tsconfig
+      package.json    # minimal fixture manifest (type: module, no deps)
+```
+
+There is no per-case README; this single README at the v1 root covers the whole
+tranche.
+
+## Definition → fixture mapping
+
+`definition.json` holds only the required `BenchmarkCaseDefinition` fields
+(`id`, `schemaVersion`, `kind`, `category`, `objective`,
+`expectedTerminalOutcome`, `humanImplementationInterventionAllowed`, and
+`assertionIdentifiers`). All cases use `schemaVersion: "v1"`, `kind:
+"solvable"`, `expectedTerminalOutcome: "ACCEPTED"`, and
+`humanImplementationInterventionAllowed: false`.
+
+The definition carries no path fields. Instead, the surrounding directory is the
+contract: `fixture/` is the starting candidate contents, and `assert.ts` is the
+external required behavioral check suite plus the isolated fixture typecheck.
+The directory name equals the definition's `id`.
+
+- `autonomy-v1-001` — focused arithmetic bug: `mean([])` currently returns
+  `NaN`; the fix must return `0` while preserving nonempty means.
+- `autonomy-v1-002` — additive parser feature: `parseBoolean` initially
+  recognizes only `'true'`/`'false'`; add the exact `'yes'`/`'no'` aliases while
+  preserving existing tokens, case-sensitivity, and no trimming.
+- `autonomy-v1-003` — boundary bug: `parsePort("0")` currently returns `0`
+  instead of `undefined`; the fix must reject `'0'` while preserving valid
+  decimal ports up to `'65535'`, strict digit-only parsing, and rejection of
+  out-of-range, negative, fractional, whitespace, and nonnumeric inputs.
+- `autonomy-v1-004` — off-by-one bug: `last([1, 2, 3])` currently returns the
+  first element `1` instead of the final element `3`; the fix must return the
+  final element of a nonempty array while preserving the existing behavior
+  that `last([])` returns `undefined`.
+- `autonomy-v1-005` — first-occurrence-order bug: `unique(["b", "a", "b"])`
+  currently returns `["a", "b"]` (the deduplicated values sorted
+  alphabetically); the fix must preserve the first-occurrence order
+  (`["b", "a"]`) while preserving exact case-sensitive deduplication and the
+  no-mutation guarantee.
+- `autonomy-v1-006` — nullish-filtering bug: `filterDefined([1, null, 0, false, '', 'a', undefined])`
+  currently returns `[1, 'a']` (a truthiness-based filter that drops
+  legitimate falsy values `0`, `false`, and `''` along with `null` and
+  `undefined`); the fix must remove only the `null` and `undefined` entries
+  while preserving the relative order of retained values, the generic
+  typing, and the no-mutation guarantee.
+- `autonomy-v1-007` — misplaced-prefix-removal bug: `stripPrefix('valuepre', 'pre')`
+  currently returns `'value'` (a first-occurrence replacement that removes the
+  prefix anywhere in the value, not only when it leads); the fix must remove
+  only a single leading prefix (`stripPrefix('prevalue', 'pre')` returns
+  `'value'`, `stripPrefix('valuepre', 'pre')` returns `'valuepre'` unchanged)
+  while preserving exact case-sensitive matching, no trimming or
+  normalization, and the unchanged empty-prefix behavior.
+- `autonomy-v1-008` — reversed-merge-precedence bug: `mergeOptions({ theme: 'dark' }, { theme: 'light' })`
+  currently returns `{ theme: 'dark' }` (the result is built from `overrides`
+  first, then `defaults` are applied on top, so `defaults` win for a key
+  present in both inputs); the fix must let the `overrides` value win for
+  every conflicting key while preserving keys present in only one input with
+  their original values, exact case-sensitive key matching, the guarantee
+  that the result is a fresh object distinct from both inputs, and the
+  guarantee that neither input object is modified.
+- `autonomy-v1-009` — inclusive-end slicing bug: `sliceInclusive(['a', 'b', 'c', 'd'], 1, 2)`
+  currently returns `['b']` (the function delegates to `Array.prototype.slice`,
+  which treats `end` as exclusive, so the element at the supplied end index is
+  omitted); the fix must include the element at the end index
+  (`sliceInclusive(['a', 'b', 'c', 'd'], 1, 2)` returns `['b', 'c']`) while
+  preserving the existing inclusive start position, the exclusion of elements
+  outside the requested bounds, beyond-length end handling as in
+  `Array.prototype.slice`, the generic typing, and the guarantees that the
+  result is a fresh array distinct from the input and that the supplied array
+  is never mutated.
+- `autonomy-v1-010` — partial-final-chunk omission bug: `chunk([1, 2, 3, 4, 5], 2)`
+  currently returns `[[1, 2], [3, 4]]` (the function emits a fresh chunk for
+  every complete window only, so the trailing incomplete window is silently
+  dropped); the fix must retain the final partial chunk
+  (`chunk([1, 2, 3, 4, 5], 2)` returns `[[1, 2], [3, 4], [5]]`) while
+  preserving that complete chunks are emitted in order, retained elements
+  preserve their identity and original order, the returned outer array and
+  every inner chunk are fresh arrays distinct from the input and from each
+  other, the supplied array is never mutated, an input whose length is a
+  multiple of `size` yields no extra empty chunk, and the generic typing.
+
+## Assertions and manual invocation
+
+`assert.ts` is a standalone, manually invoked, case-specific test script — not a
+runner abstraction. It is deliberately kept outside the candidate fixture. It
+runs the requested behavioral checks, the regression checks, and a fixture-local
+typecheck, emitting only the declared `{ assertionId, passed }` results to
+stdout and diagnostics to stderr.
+
+To evaluate a candidate, **copy the `fixture/` directory** into a working
+location, edit the copy, and point the assertion script at that copy. Do not edit
+the frozen inputs in place:
+
+```
+node --import tsx <case-id>/assert.ts <candidate-fixture-dir>
+```
+
+`<candidate-fixture-dir>` is the directory containing the candidate's
+`index.ts` and `tsconfig.json`; candidate files are resolved only from this
+argument, never from the frozen fixture or an assumed working-tree location.
+
+## Frozen status
+
+These inputs are frozen on acceptance. Once accepted, a case's `definition.json`,
+`assert.ts`, and `fixture/` are the fixed starting point for that case and are
+not modified by later work.

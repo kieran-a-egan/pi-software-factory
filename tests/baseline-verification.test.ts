@@ -371,6 +371,15 @@ describe("runFactory baseline verification gate", () => {
       "baseline-verify",
     ]);
 
+    // Zero-repair baseline termination: the persisted aggregate repair total
+    // equals the sum of the dedicated counters in both state and run summary.
+    for (const persisted of [readJson(runDir, "state.json"), readJson(runDir, "run-summary.json")]) {
+      expect(persisted.deterministicRepairPasses).toBe(0);
+      expect(persisted.reviewRepairPasses).toBe(0);
+      expect(persisted.repairPasses).toBe(persisted.deterministicRepairPasses + persisted.reviewRepairPasses);
+      expect(persisted.repairPasses).toBe(0);
+    }
+
     // Source contents, the real index, the worktree, and HEAD are unchanged;
     // the only visible Git activity is the run's own untracked runtime artifacts.
     expect(await g(dir, ["rev-parse", "HEAD"])).toBe(headBefore);

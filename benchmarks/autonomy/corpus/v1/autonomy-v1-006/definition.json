@@ -1,0 +1,14 @@
+{
+  "id": "autonomy-v1-006",
+  "schemaVersion": "v1",
+  "kind": "solvable",
+  "category": "bug-fix",
+  "objective": "Modify fixture/index.ts so that the exported function filterDefined<T>(values: readonly (T | null | undefined)[]): T[] removes only the null and undefined entries, while preserving the relative order of the retained values (for example filterDefined([1, null, 0, false, '', 'a', undefined]) returns [1, 0, false, '', 'a'], and filterDefined([]) returns []), the generic typing, and the guarantee that the supplied array is never mutated. Do not change the exported signature of filterDefined, and do not mutate the supplied array.",
+  "expectedTerminalOutcome": "ACCEPTED",
+  "humanImplementationInterventionAllowed": false,
+  "assertionIdentifiers": [
+    "preserves-falsy-values",
+    "existing-nullish-filtering",
+    "fixture-typecheck"
+  ]
+}

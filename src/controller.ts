@@ -43,6 +43,7 @@ import {
 } from "./orchestration.js";
 import { evaluateWorkerGateConfidence } from "./worker-routing.js";
 import { evaluateFinalReview } from "./review-routing.js";
+import { selectImplementationEvidence } from "./implementation-evidence.js";
 import { createRunStore } from "./storage.js";
 import { reserveRun } from "./run-safety.js";
 import { stageTimingMetrics } from "./timing.js";
@@ -52,12 +53,14 @@ import type {
   FactoryProgressEvent,
   FactoryRunState,
   ImplementationUnit,
+  RepairClass,
   ReviewResult,
   ScoutResult,
   StageTelemetry,
   TokenUsageSnapshot,
   VerificationResult,
   WorkerExecutionContext,
+  WorkerContinuationRecord,
   WorkerGateDecision,
   WorkerReport,
 } from "./types.js";
@@ -140,6 +143,8 @@ function buildRunSummary(state: FactoryRunState) {
     finalReason: state.finalReason,
     reviewRouting: state.reviewRouting,
     sourceDisposition: state.sourceDisposition,
+    deterministicRepairPasses: state.deterministicRepairPasses,
+    reviewRepairPasses: state.reviewRepairPasses,
     repairPasses: state.repairPasses,
     rescoutPasses: state.rescoutPasses,
     replanPasses: state.replanPasses,
@@ -204,7 +209,13 @@ export async function runFactory(
     cwd,
     objective,
     phase: "initializing",
-    repairPasses: 0,
+    deterministicRepairPasses: 0,
+    reviewRepairPasses: 0,
+    // repairPasses is derived, never independently incremented. Defined as an
+    // own enumerable accessor so JSON serialization materializes its value.
+    get repairPasses() {
+      return state.deterministicRepairPasses + state.reviewRepairPasses;
+    },
     rescoutPasses: 0,
     replanPasses: 0,
     planGatePasses: 0,
@@ -471,6 +482,8 @@ export async function runFactory(
     executionContext: WorkerExecutionContext;
     deterministicFailures?: Array<{ command: string; output: string }>;
     artifactName: string;
+    repairClass?: RepairClass;
+    repairPass?: number;
   }): Promise<WorkerGateDecision | null> => {
     if (input.phase === "implementation") {
       const unexpectedFiles = unexpectedReportedFiles(input.assignment, input.report);
@@ -519,6 +532,9 @@ export async function runFactory(
       stage: "worker-gate",
       phase: input.phase,
       label: input.label,
+      ...(input.repairClass
+        ? { repairClass: input.repairClass, repairPass: input.repairPass }
+        : {}),
       at: new Date().toISOString(),
       decision: gate,
       confidenceRouting: routing,
@@ -549,6 +565,8 @@ export async function runFactory(
     executionContext: WorkerExecutionContext;
     workerCwd?: string;
     abortSignal?: AbortSignal;
+    repairClass?: RepairClass;
+    repairPass?: number;
   }): Promise<WorkerReport | null> => {
     let continuationPass = 0;
     let prompt = input.basePrompt;
@@ -584,6 +602,8 @@ export async function runFactory(
         executionContext: input.executionContext,
         deterministicFailures: input.deterministicFailures,
         artifactName: `${input.gateArtifactStem}${suffix}.json`,
+        repairClass: input.repairClass,
+        repairPass: input.repairPass,
       });
       if (!gate) return null;
 
@@ -605,13 +625,16 @@ export async function runFactory(
       }
 
       continuationPass += 1;
-      const record = {
+      const record: WorkerContinuationRecord = {
         phase: input.phase,
         label: input.label,
         pass: continuationPass,
         createdAt: new Date().toISOString(),
         priorDisposition: "continue" as const,
         priorConfidence: gate.confidence,
+        ...(input.repairClass
+          ? { repairClass: input.repairClass, repairPass: input.repairPass }
+          : {}),
       };
       state.workerContinuations ??= [];
       state.workerContinuations.push(record);
@@ -886,6 +909,13 @@ export async function runFactory(
             : "deferred",
       }));
 
+    const repositoryEvidence = selectImplementationEvidence(state.scout!, unit);
+    const safeUnitId = unit.id.replace(/[^a-zA-Z0-9_.-]/g, "_");
+    store.write(`implementation-context-${safeUnitId}.json`, {
+      unitId: unit.id,
+      repositoryEvidence,
+    });
+
     return implementerPrompt({
       executionMode,
       projectContext,
@@ -893,6 +923,7 @@ export async function runFactory(
       architecturalDecisions: state.architecture!.architecturalDecisions,
       currentUnit: unit,
       otherUnits,
+      repositoryEvidence,
     });
   };
 
@@ -1241,21 +1272,26 @@ export async function runFactory(
   // Deterministic tools are authoritative. Failed compiler/test/lint checks route
   // directly to bounded repair. Jev classifies only whether the repair report is
   // ready to be re-verified; it cannot override deterministic check results.
-  while (!verification.passed && state.repairPasses < config.maxRepairPasses) {
-    state.repairPasses += 1;
+  while (
+    !verification.passed &&
+    state.deterministicRepairPasses < config.maxDeterministicRepairPasses
+  ) {
+    state.deterministicRepairPasses += 1;
+    const pass = state.deterministicRepairPasses;
     const deterministicFailures = verification.checks
       .filter((x) => !x.passed)
       .map((x) => ({ command: x.command, output: x.output }));
 
     const repairAssignment = {
       kind: "deterministic-verification-repair",
-      pass: state.repairPasses,
+      repairClass: "deterministic" as const,
+      pass,
       architecture: state.architecture,
       deterministicFailures,
     };
 
     const repairBasePrompt = repairPrompt({
-      unitId: `verification-repair-${state.repairPasses}`,
+      unitId: `verification-repair-${pass}`,
       objective,
       architecture: state.architecture!,
       review: null,
@@ -1265,10 +1301,12 @@ export async function runFactory(
       phase: "repair",
       role: "repairer",
       stage: "qwen-repair",
-      label: `deterministic repair ${state.repairPasses}`,
+      repairClass: "deterministic",
+      repairPass: pass,
+      label: `deterministic repair ${pass}`,
       assignment: repairAssignment,
-      artifactStem: `repair-${state.repairPasses}`,
-      gateArtifactStem: `repair-gate-${state.repairPasses}`,
+      artifactStem: `deterministic-repair-${pass}`,
+      gateArtifactStem: `deterministic-repair-gate-${pass}`,
       systemPrompt: REPAIRER_SYSTEM,
       basePrompt: repairBasePrompt,
       executionContext: {
@@ -1281,14 +1319,17 @@ export async function runFactory(
     if (!repair) return finish();
 
     verification = await runStage(
-      { stage: "verify", label: `after deterministic repair ${state.repairPasses}`, actor: "tools" },
+      { stage: "verify", label: `after deterministic repair ${pass}`, actor: "tools" },
       () => verify(cwd, config.verificationCommands, runtimeStatusIgnores),
     );
     state.verification = verification;
-    store.write(`verification-${state.repairPasses}.json`, verification);
+    store.write(`verification-after-deterministic-repair-${pass}.json`, verification);
   }
 
-  const doReview = async (label?: string) => {
+  const doReview = async (
+    label?: string,
+    reviewRepair?: { previousReview: ReviewResult; repair: WorkerReport },
+  ) => {
     const diffForReview = verification.diff.length > config.maxDiffCharsForReview
       ? `${verification.diff.slice(0, config.maxDiffCharsForReview)}\n\n[diff truncated; inspect repository files for remaining changes]`
       : verification.diff;
@@ -1306,6 +1347,7 @@ export async function runFactory(
           architecture: state.architecture!,
           workers: state.workers!,
           verification: { ...verification, diff: diffForReview },
+          ...(reviewRepair ? { reviewRepair } : {}),
         }),
         modelRuntime,
         tools: readOnlyTools(),
@@ -1336,23 +1378,25 @@ export async function runFactory(
   while (
     state.reviewGate.action === "rework" &&
     state.reviewGate.confidence >= config.jev.minChoiceConfidence &&
-    state.repairPasses < config.maxRepairPasses
+    state.reviewRepairPasses < config.maxReviewRepairPasses
   ) {
-    state.repairPasses += 1;
+    state.reviewRepairPasses += 1;
+    const pass = state.reviewRepairPasses;
     const deterministicFailures = verification.checks
       .filter((x) => !x.passed)
       .map((x) => ({ command: x.command, output: x.output }));
 
     const repairAssignment = {
       kind: "review-repair",
-      pass: state.repairPasses,
+      repairClass: "review" as const,
+      pass,
       architecture: state.architecture,
       review,
       deterministicFailures,
     };
 
     const repairBasePrompt = repairPrompt({
-      unitId: `review-repair-${state.repairPasses}`,
+      unitId: `review-repair-${pass}`,
       objective,
       architecture: state.architecture!,
       review,
@@ -1362,10 +1406,12 @@ export async function runFactory(
       phase: "repair",
       role: "repairer",
       stage: "qwen-repair",
-      label: `review repair ${state.repairPasses}`,
+      repairClass: "review",
+      repairPass: pass,
+      label: `review repair ${pass}`,
       assignment: repairAssignment,
-      artifactStem: `repair-${state.repairPasses}`,
-      gateArtifactStem: `repair-gate-${state.repairPasses}`,
+      artifactStem: `review-repair-${pass}`,
+      gateArtifactStem: `review-repair-gate-${pass}`,
       systemPrompt: REPAIRER_SYSTEM,
       basePrompt: repairBasePrompt,
       executionContext: {
@@ -1378,23 +1424,23 @@ export async function runFactory(
     if (!repair) return finish();
 
     verification = await runStage(
-      { stage: "verify", label: `after repair ${state.repairPasses}`, actor: "tools" },
+      { stage: "verify", label: `after review repair ${pass}`, actor: "tools" },
       () => verify(cwd, config.verificationCommands, runtimeStatusIgnores),
     );
     state.verification = verification;
-    store.write(`verification-${state.repairPasses}.json`, verification);
+    store.write(`verification-after-review-repair-${pass}.json`, verification);
 
-    review = await doReview(`after repair ${state.repairPasses}`);
+    review = await doReview(`after review repair ${pass}`, { previousReview: review, repair });
     state.review = review;
-    store.write(`review-${state.repairPasses}.json`, review);
+    store.write(`review-after-repair-${pass}.json`, review);
 
     state.reviewGate = await runStage(
-      { stage: "jev-review-gate", label: `after repair ${state.repairPasses}`, actor: "jev", model: config.jev.model },
+      { stage: "jev-review-gate", label: `after review repair ${pass}`, actor: "jev", model: config.jev.model },
       () => jev.gateReview({ objective, architecture: state.architecture!, verification, review }),
       (value) => jevExtras(value, config.jev.model),
     );
-    store.write(`review-gate-${state.repairPasses}.json`, state.reviewGate);
-    recordDecision({ stage: "review-gate", repairPass: state.repairPasses, at: new Date().toISOString(), decision: state.reviewGate });
+    store.write(`review-gate-after-repair-${pass}.json`, state.reviewGate);
+    recordDecision({ stage: "review-gate", repairClass: "review", repairPass: pass, at: new Date().toISOString(), decision: state.reviewGate });
   }
 
   state.reviewRouting = evaluateFinalReview({
