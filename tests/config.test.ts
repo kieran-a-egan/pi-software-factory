@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_CONFIG, loadConfig } from "../src/config.js";
+import { DEFAULT_CONFIG, loadConfig, resolveConfig, THINKING_LEVELS } from "../src/config.js";
 import type { FactoryConfig, ModelRef, ThinkingLevel } from "../src/types.js";
 
 const ROLES = ["scout", "architect", "implementer", "reviewer", "repairer"] as const;
@@ -361,5 +361,183 @@ describe("legacy key mixed with dedicated keys", () => {
     } catch (error) {
       expect(String(error)).toContain(mentioned);
     }
+  });
+});
+
+describe("THINKING_LEVELS export", () => {
+  it("exports exactly off, minimal, low, medium, high, xhigh, max in that order", () => {
+    expect([...THINKING_LEVELS]).toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+  });
+});
+
+describe("resolveConfig (shared in-memory boundary)", () => {
+  it("performs no filesystem access: a missing cwd with a relative runRoot still resolves", () => {
+    const cwd = join(tmpdir(), "sf-config-missing-cwd", "does-not-exist");
+    const config = resolveConfig(cwd, {});
+    expect(config.runRoot).toBe(join(cwd, ".pi", "software-factory", "runs"));
+  });
+
+  it("returns the effective config for a representative valid input without any file", () => {
+    const cwd = join(tmpdir(), "sf-config-no-file");
+    const value = {
+      models: structuredClone(VALID_MODELS),
+      jev: { model: "jev-custom", minChoiceConfidence: 0.7, minNoulProbability: 0.8 },
+      maxDeterministicRepairPasses: 3,
+      maxReviewRepairPasses: 5,
+      verificationCommands: ["npm test"],
+    };
+    const config = resolveConfig(cwd, value);
+    expect(config.models).toEqual(VALID_MODELS);
+    expect(config.jev).toEqual({ model: "jev-custom", minChoiceConfidence: 0.7, minNoulProbability: 0.8 });
+    expect(config.maxDeterministicRepairPasses).toBe(3);
+    expect(config.maxReviewRepairPasses).toBe(5);
+    expect(config.verificationCommands).toEqual(["npm test"]);
+    expect(config.runRoot).toBe(join(cwd, ".pi", "software-factory", "runs"));
+  });
+
+  it.each([
+    [null, "null"],
+    [[], "array"],
+    ["{}", "string"],
+    [42, "number"],
+    [true, "boolean"],
+    [false, "boolean"],
+  ])("rejects a %s root explicitly", (value: unknown, _label: string) => {
+    expect(() => resolveConfig(tmpdir(), value)).toThrowError(
+      /expected a JSON object at the top level\./,
+    );
+  });
+
+  it.each(["qwen", "astra"])("keeps obsolete top-level %s rejection with the migration instruction", (legacy) => {
+    expect(() => resolveConfig(tmpdir(), { [legacy]: { provider: "p", model: "m", thinking: "low" } })).toThrowError(
+      new RegExp(
+        'the top-level "' + legacy + '" field is obsolete.*Replace it with the required models block \\(scout, architect, implementer, reviewer, repairer\\)',
+      ),
+    );
+  });
+
+  it("keeps field-specific model and budget errors intact", () => {
+    const models = structuredClone(VALID_MODELS);
+    models.scout.thinking = "turbo" as ThinkingLevel;
+    expect(() => resolveConfig(tmpdir(), { models })).toThrowError(
+      /Invalid models\.scout\.thinking: expected one of off, minimal, low, medium, high, xhigh, max\./,
+    );
+    const missingModel = structuredClone(VALID_MODELS);
+    delete (missingModel.architect as unknown as Record<string, unknown>)["model"];
+    expect(() => resolveConfig(tmpdir(), { models: missingModel })).toThrowError(
+      /Invalid models\.architect\.model: expected a non-empty string\./,
+    );
+    expect(() =>
+      resolveConfig(tmpdir(), { contextBudget: { warningTokens: 50, checkpointTokens: 40, hardLimitTokens: 60 } }),
+    ).toThrowError(/Invalid contextBudget: require 0 < warningTokens < checkpointTokens < hardLimitTokens\./);
+    expect(() => resolveConfig(tmpdir(), { planningLoops: { maxRescoutPasses: -1 } })).toThrowError(
+      /Invalid planningLoops\.maxRescoutPasses: expected a non-negative integer\./,
+    );
+    expect(() => resolveConfig(tmpdir(), { parallelImplementation: { maxParallelUnits: 0 } })).toThrowError(
+      /Invalid parallelImplementation\.maxParallelUnits: expected an integer >= 1\./,
+    );
+    expect(() => resolveConfig(tmpdir(), { maxDeterministicRepairPasses: -2 })).toThrowError(
+      /Invalid maxDeterministicRepairPasses: expected a non-negative integer\./,
+    );
+    expect(() => resolveConfig(tmpdir(), { workerMaxRuntimeMinutes: 0 })).toThrowError(
+      /Invalid workerMaxRuntimeMinutes: expected a positive number\./,
+    );
+  });
+
+  it("leaves the caller input deeply unchanged on success, including repair migration", () => {
+    const value = {
+      maxRepairPasses: 4,
+      jev: { minChoiceConfidence: 0.7 },
+      models: structuredClone(VALID_MODELS),
+      contextBudget: { warningTokens: 10 },
+    };
+    const before = structuredClone(value);
+    const config = resolveConfig(tmpdir(), value);
+    expect(value).toEqual(before);
+    expect(config.maxDeterministicRepairPasses).toBe(4);
+    expect(config.maxReviewRepairPasses).toBe(4);
+  });
+
+  it("leaves the caller input deeply unchanged on failure, including mixed repair keys", () => {
+    const value = { maxRepairPasses: 1, maxDeterministicRepairPasses: 1, models: structuredClone(VALID_MODELS) };
+    const before = structuredClone(value);
+    expect(() => resolveConfig(tmpdir(), value)).toThrowError(
+      /legacy maxRepairPasses cannot be combined/,
+    );
+    expect(value).toEqual(before);
+
+    const badValue = { models: structuredClone(VALID_MODELS) as unknown as Record<string, unknown> };
+    delete badValue.models["scout"];
+    const badBefore = structuredClone(badValue);
+    expect(() => resolveConfig(tmpdir(), badValue)).toThrowError(/Invalid models\.scout:/);
+    expect(badValue).toEqual(badBefore);
+  });
+
+  it("does not share mutable nested values with the caller input or DEFAULT_CONFIG", () => {
+    const value = { jev: { minChoiceConfidence: 0.7 } };
+    const config = resolveConfig(tmpdir(), value);
+    config.jev.model = "mutated";
+    config.models.scout.provider = "mutated";
+    config.contextBudget.warningTokens = 1;
+    config.verificationCommands.push("extra");
+    expect(value).toEqual({ jev: { minChoiceConfidence: 0.7 } });
+    expect(DEFAULT_CONFIG.jev.model).toBe("jev-latest");
+    expect(DEFAULT_CONFIG.models.scout.provider).toBe("unsloth-local");
+    expect(DEFAULT_CONFIG.contextBudget.warningTokens).toBe(65_000);
+    expect(DEFAULT_CONFIG.verificationCommands).toEqual([]);
+  });
+});
+
+describe("loadConfig / resolveConfig equivalence", () => {
+  const CASES: Array<[string, Record<string, unknown>]> = [
+    ["complete models block", { models: structuredClone(VALID_MODELS) }],
+    ["omitted defaults", {}],
+    ["dedicated budgets", { maxDeterministicRepairPasses: 3, maxReviewRepairPasses: 5 }],
+    ["legacy maxRepairPasses", { maxRepairPasses: 2 }],
+    [".okf/work alias", { runRoot: ".okf/work" }],
+    ["relative runRoot", { runRoot: "custom/runs" }],
+    ["absolute runRoot", { runRoot: join(tmpdir(), "sf-config-abs-runs") }],
+    ["context budgets", { contextBudget: { warningTokens: 10, checkpointTokens: 20, hardLimitTokens: 30, maxCheckpointsPerStage: 1 } }],
+    ["planning loops", { planningLoops: { maxRescoutPasses: 3, maxReplanPasses: 1 } }],
+    ["parallelism", { parallelImplementation: { enabled: false, maxParallelUnits: 4 } }],
+    [
+      "preserved Jev and verification values",
+      {
+        jev: { model: "jev-custom", minChoiceConfidence: 0.7, minNoulProbability: 0.8 },
+        verificationCommands: ["npm test"],
+        contextPaths: ["AGENTS.md"],
+        contextMaxBytes: 100_000,
+        requireCleanWorkingTree: false,
+        maxWorkerContinuationPasses: 3,
+        workerMaxRuntimeMinutes: 30,
+        maxDiffCharsForReview: 40_000,
+      },
+    ],
+  ];
+
+  for (const [label, value] of CASES) {
+    it(`yields equal effective configs for ${label}`, () => {
+      const dir = writeConfig(mkdtempSync(join(tmpdir(), "sf-config-")), structuredClone(value));
+      expect(resolveConfig(dir, structuredClone(value))).toEqual(loadConfig(dir));
+    });
+  }
+
+  it("returns an independent default clone with its existing relative runRoot when the file is absent", () => {
+    const empty = mkdtempSync(join(tmpdir(), "sf-config-"));
+    configPaths.push(empty);
+    const config = loadConfig(empty);
+    expect(config).toEqual(DEFAULT_CONFIG);
+    expect(config.runRoot).toBe(".pi/software-factory/runs");
+    expect(config).not.toBe(DEFAULT_CONFIG);
+    config.jev.model = "mutated";
+    expect(DEFAULT_CONFIG.jev.model).toBe("jev-latest");
+  });
+
+  it("still fails through loadConfig for malformed JSON", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sf-config-"));
+    configPaths.push(dir);
+    mkdirSync(join(dir, ".pi"), { recursive: true });
+    writeFileSync(join(dir, ".pi", "software-factory.json"), "{ not valid json");
+    expect(() => loadConfig(dir)).toThrowError(SyntaxError);
   });
 });

@@ -5,7 +5,7 @@ import type { FactoryConfig, ThinkingLevel } from "./types.js";
 export const MODEL_ROLES = ["scout", "architect", "implementer", "reviewer", "repairer"] as const;
 export type ModelRole = (typeof MODEL_ROLES)[number];
 
-const THINKING_LEVELS: readonly ThinkingLevel[] = [
+export const THINKING_LEVELS: readonly ThinkingLevel[] = [
   "off",
   "minimal",
   "low",
@@ -131,11 +131,19 @@ function deepMerge<T extends Record<string, any>>(base: T, override: Partial<T>)
   return out as T;
 }
 
-export function loadConfig(cwd: string): FactoryConfig {
-  const configPath = join(cwd, ".pi", "software-factory.json");
-  if (!existsSync(configPath)) return structuredClone(DEFAULT_CONFIG);
+/**
+ * Resolves a parsed configuration value into the effective FactoryConfig.
+ * This is the single shared validation/resolution boundary: it performs no
+ * filesystem access (cwd only resolves a relative runRoot) and clones the
+ * caller-owned value before any migration or merging, so the input is never
+ * mutated. The missing-file branch of loadConfig does not route through here.
+ */
+export function resolveConfig(cwd: string, value: unknown): FactoryConfig {
+  if (!isPlainRecord(value)) {
+    throw new Error("Invalid configuration: expected a JSON object at the top level.");
+  }
 
-  const parsed = JSON.parse(readFileSync(configPath, "utf8"));
+  const parsed: Record<string, any> = structuredClone(value);
 
   // The qwen/astra buckets were replaced by the required models.<role> block.
   // Reject them explicitly so an obsolete local configuration cannot silently
@@ -237,6 +245,14 @@ export function loadConfig(cwd: string): FactoryConfig {
 
   if (!isAbsolute(config.runRoot)) config.runRoot = join(cwd, config.runRoot);
   return config;
+}
+
+export function loadConfig(cwd: string): FactoryConfig {
+  const configPath = join(cwd, ".pi", "software-factory.json");
+  if (!existsSync(configPath)) return structuredClone(DEFAULT_CONFIG);
+
+  const parsed = JSON.parse(readFileSync(configPath, "utf8"));
+  return resolveConfig(cwd, parsed);
 }
 
 export function resolveRunRoot(cwd: string, config: FactoryConfig): string {
