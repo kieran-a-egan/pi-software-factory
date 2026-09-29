@@ -1,8 +1,8 @@
 # Autonomy benchmark corpus — v1
 
 This directory is a plain, frozen corpus of tiny solvable TypeScript benchmark
-cases. **This tranche contains exactly nine cases, `autonomy-v1-001` through
-`autonomy-v1-009`.** No other cases, shared runners, or helpers live here.
+cases. **This tranche contains exactly ten cases, `autonomy-v1-001` through
+`autonomy-v1-010`.** No other cases, shared runners, or helpers live here.
 
 ## Layout
 
@@ -85,6 +85,16 @@ The directory name equals the definition's `id`.
   `Array.prototype.slice`, the generic typing, and the guarantees that the
   result is a fresh array distinct from the input and that the supplied array
   is never mutated.
+- `autonomy-v1-010` — partial-final-chunk omission bug: `chunk([1, 2, 3, 4, 5], 2)`
+  currently returns `[[1, 2], [3, 4]]` (the function emits a fresh chunk for
+  every complete window only, so the trailing incomplete window is silently
+  dropped); the fix must retain the final partial chunk
+  (`chunk([1, 2, 3, 4, 5], 2)` returns `[[1, 2], [3, 4], [5]]`) while
+  preserving that complete chunks are emitted in order, retained elements
+  preserve their identity and original order, the returned outer array and
+  every inner chunk are fresh arrays distinct from the input and from each
+  other, the supplied array is never mutated, an input whose length is a
+  multiple of `size` yields no extra empty chunk, and the generic typing.
 
 ## Assertions and manual invocation
 

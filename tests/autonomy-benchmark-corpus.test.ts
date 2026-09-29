@@ -3,7 +3,7 @@
  * (benchmarks/autonomy/corpus/v1/).
  *
  * The corpus is a plain, frozen set of tiny solvable cases. This suite
- * exercises only the repository-safe, read-only concerns for the nine cases
+ * exercises only the repository-safe, read-only concerns for the ten cases
  * in this tranche:
  *
  * - each committed definition.json loads through node:fs + JSON.parse,
@@ -12,7 +12,7 @@
  * - the expected stable IDs are present, distinct, and carry the documented
  *   schema/kind/outcome/intervention policy;
  * - each validated ID maps to its directory, whose definition.json, assert.ts,
- *   and all three fixture files exist, and the v1 root holds exactly the nine
+ *   and all three fixture files exist, and the v1 root holds exactly the ten
  *   expected case directories;
  * - directly imported pristine fixture exports exhibit the documented
  *   pre-task defects/missing aliases plus the important existing behavior.
@@ -36,12 +36,13 @@ import { filterDefined } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-006/
 import { stripPrefix } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-007/fixture/index.js";
 import { mergeOptions } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-008/fixture/index.js";
 import { sliceInclusive } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-009/fixture/index.js";
+import { chunk } from "../benchmarks/autonomy/corpus/v1/autonomy-v1-010/fixture/index.js";
 
 const repoRoot = fileURLToPath(new URL("../", import.meta.url));
 const corpusRoot = join(repoRoot, "benchmarks", "autonomy", "corpus", "v1");
 
 /** The exact case directories this tranche contains, in declaration order. */
-const EXPECTED_CASE_IDS = ["autonomy-v1-001", "autonomy-v1-002", "autonomy-v1-003", "autonomy-v1-004", "autonomy-v1-005", "autonomy-v1-006", "autonomy-v1-007", "autonomy-v1-008", "autonomy-v1-009"] as const;
+const EXPECTED_CASE_IDS = ["autonomy-v1-001", "autonomy-v1-002", "autonomy-v1-003", "autonomy-v1-004", "autonomy-v1-005", "autonomy-v1-006", "autonomy-v1-007", "autonomy-v1-008", "autonomy-v1-009", "autonomy-v1-010"] as const;
 
 /** The artifact files every case directory must contain, relative to the case dir. */
 const REQUIRED_ARTIFACTS = [
@@ -58,7 +59,7 @@ function loadParsedDefinition(caseId: string): unknown {
 }
 
 describe("autonomy-benchmark corpus v1", () => {
-  it("contains exactly the nine expected case directories", () => {
+  it("contains exactly the ten expected case directories", () => {
     const entries = readdirSync(corpusRoot, { withFileTypes: true });
     const directories = entries
       .filter((entry) => entry.isDirectory())
@@ -94,12 +95,12 @@ describe("autonomy-benchmark corpus v1", () => {
     });
   }
 
-  it("declares nine distinct stable case IDs", () => {
+  it("declares ten distinct stable case IDs", () => {
     const ids = EXPECTED_CASE_IDS.map((caseId) =>
       validateBenchmarkCaseDefinition(loadParsedDefinition(caseId)).id,
     );
     expect(new Set(ids).size).toBe(ids.length);
-    expect(ids).toEqual(["autonomy-v1-001", "autonomy-v1-002", "autonomy-v1-003", "autonomy-v1-004", "autonomy-v1-005", "autonomy-v1-006", "autonomy-v1-007", "autonomy-v1-008", "autonomy-v1-009"]);
+    expect(ids).toEqual(["autonomy-v1-001", "autonomy-v1-002", "autonomy-v1-003", "autonomy-v1-004", "autonomy-v1-005", "autonomy-v1-006", "autonomy-v1-007", "autonomy-v1-008", "autonomy-v1-009", "autonomy-v1-010"]);
   });
 });
 
@@ -283,5 +284,27 @@ describe("autonomy-v1-008 pristine mergeOptions fixture", () => {
     expect(overrides).toEqual(overridesBefore);
     expect(result).not.toBe(defaults);
     expect(result).not.toBe(overrides);
+  });
+});
+
+describe("autonomy-v1-010 pristine chunk fixture", () => {
+  it("has the documented final-partial-chunk omission defect", () => {
+    // Pristine: only complete windows are emitted, so the trailing
+    // incomplete window `[5]` is dropped from the result.
+    expect(chunk([1, 2, 3, 4, 5], 2)).toEqual([[1, 2], [3, 4]]);
+  });
+
+  it("preserves complete chunks for divisible inputs in order", () => {
+    expect(chunk([1, 2, 3, 4], 2)).toEqual([[1, 2], [3, 4]]);
+    expect(chunk([1, 2], 1)).toEqual([[1], [2]]);
+    expect(chunk([], 2)).toEqual([]);
+  });
+
+  it("does not mutate the supplied input and returns a fresh array distinct from it", () => {
+    const input = [1, 2, 3, 4];
+    const before = [...input];
+    const result = chunk(input, 2);
+    expect(input).toEqual(before);
+    expect(result).not.toBe(input);
   });
 });
