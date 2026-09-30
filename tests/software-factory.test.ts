@@ -1,8 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Deterministic stand-ins for the Pi runtime: the TUI text component, config
-// loading, and the controller are all mocked so the extension is exercised
-// without real models, network access, or a live Pi session.
+// loading, the controller, and the persistence boundary are mocked so the
+// extension is exercised without real models, network access, a live Pi
+// session, or filesystem writes. The config and setup partial mocks preserve
+// the real exports (MODEL_ROLES, THINKING_LEVELS, normalizeAvailableModels)
+// while overriding only the seams the tests need to script.
 vi.mock("@earendil-works/pi-tui", () => ({
   Text: class Text {
     constructor(public text: string) {}
@@ -12,9 +15,15 @@ vi.mock("@earendil-works/pi-tui", () => ({
   },
 }));
 
-vi.mock("../src/config.js", () => ({
-  loadConfig: vi.fn(),
-}));
+vi.mock("../src/config.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/config.js")>();
+  return { ...actual, loadConfig: vi.fn() };
+});
+
+vi.mock("../src/setup.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/setup.js")>();
+  return { ...actual, persistModelRoles: vi.fn() };
+});
 
 vi.mock("../src/controller.js", () => ({
   runFactory: vi.fn(),
@@ -23,13 +32,15 @@ vi.mock("../src/controller.js", () => ({
 import softwareFactory from "../software-factory.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { loadConfig } from "../src/config.js";
+import { loadConfig, MODEL_ROLES, THINKING_LEVELS } from "../src/config.js";
+import { persistModelRoles } from "../src/setup.js";
 import { runFactory } from "../src/controller.js";
 import type {
   ContextUsageSnapshot,
   FactoryConfig,
   FactoryProgressEvent,
   FactoryRunState,
+  ModelRoles,
   StageTelemetry,
   TokenUsageSnapshot,
 } from "../src/types.js";
@@ -116,12 +127,16 @@ const theme = {
 
 type SetStatusCall = { key: string; text: string | undefined };
 type NotifyCall = { message: string; type?: string };
+type SelectCall = { title: string; options: string[] };
+type ConfirmCall = { title: string; message: string };
 
 function createCtx(overrides: Record<string, unknown> = {}) {
   const calls = {
     setStatus: [] as SetStatusCall[],
     notify: [] as NotifyCall[],
     setWidget: [] as Array<{ key: string; content: unknown }>,
+    select: [] as SelectCall[],
+    confirm: [] as ConfirmCall[],
   };
   const ctx = {
     cwd: "/test/repo",
@@ -131,6 +146,17 @@ function createCtx(overrides: Record<string, unknown> = {}) {
       setWidget: (key: string, content: unknown) => void calls.setWidget.push({ key, content }),
       setStatus: (key: string, text: string | undefined) => void calls.setStatus.push({ key, text }),
       notify: (message: string, type?: string) => void calls.notify.push({ message, type }),
+      select: vi.fn<(title: string, options: string[]) => Promise<string | undefined>>(async (title, options) => {
+        calls.select.push({ title, options });
+        return undefined;
+      }),
+      confirm: vi.fn<(title: string, message: string) => Promise<boolean>>((title, message) => {
+        calls.confirm.push({ title, message });
+        return Promise.resolve(true);
+      }),
+    },
+    modelRegistry: {
+      getAvailable: vi.fn<() => unknown>(),
     },
     sessionManager: { getEntries: () => [] as unknown[] },
     ...overrides,
@@ -235,6 +261,12 @@ describe("command registration", () => {
     expect(harness.commands.get("factory-status")!.description).toBe(
       "Print the most recent software-factory run into the transcript",
     );
+  });
+
+  it("registers the factory-setup command with its description", () => {
+    const harness = createHarness();
+    expect(harness.commands.get("factory-setup")).toBeDefined();
+    expect(harness.commands.get("factory-setup")!.description).toBe("Configure Software Factory role models");
   });
 });
 
@@ -1093,5 +1125,78 @@ describe("session persistence", () => {
       { message: "No software-factory run was found in this Pi session.", type: "warning" },
     ]);
     expect(harness.entries).toEqual([]);
+  });
+});
+
+describe("/factory-setup", () => {
+  it("collects, confirms, and persists the five role selections", async () => {
+    const harness = createHarness();
+    const registry = [
+      { provider: "prov-a", id: "model-a" },
+      { provider: "prov-b", id: "model-b" },
+    ];
+    const snapshot = [
+      { provider: "prov-a", model: "model-a" },
+      { provider: "prov-b", model: "model-b" },
+    ];
+    const modelOptions = ["1. prov-a/model-a", "2. prov-b/model-b"];
+    const selection: ModelRoles = {
+      scout: { provider: "prov-a", model: "model-a", thinking: "off" },
+      architect: { provider: "prov-b", model: "model-b", thinking: "minimal" },
+      implementer: { provider: "prov-a", model: "model-a", thinking: "low" },
+      reviewer: { provider: "prov-b", model: "model-b", thinking: "high" },
+      repairer: { provider: "prov-a", model: "model-a", thinking: "max" },
+    };
+
+    // A distinct cwd proves the save destination comes from the command
+    // context, not from the default harness cwd.
+    const { ctx, calls } = createCtx({ cwd: "/test/setup-command" });
+    vi.mocked(ctx.modelRegistry.getAvailable).mockReturnValue(registry);
+    vi.mocked(ctx.ui.select).mockImplementation(async (title: string, options: string[]) => {
+      calls.select.push({ title, options });
+      const match = /^Select (model|thinking level) for (\S+)$/.exec(title);
+      expect(match).not.toBeNull();
+      const [, kind, role] = match!;
+      const ref = selection[role as keyof ModelRoles];
+      return kind === "model"
+        ? options.find((option) => option.includes(`${ref.provider}/${ref.model}`))
+        : ref.thinking;
+    });
+    vi.mocked(ctx.ui.confirm).mockImplementation((title: string, message: string) => {
+      calls.confirm.push({ title, message });
+      return Promise.resolve(true);
+    });
+
+    await harness.commands.get("factory-setup")!.handler("", ctx);
+
+    expect(ctx.modelRegistry.getAvailable).toHaveBeenCalledTimes(1);
+    expect(calls.select.map((call) => call.title)).toEqual(
+      MODEL_ROLES.flatMap((role) => [`Select model for ${role}`, `Select thinking level for ${role}`]),
+    );
+    expect(calls.select.map((call) => call.options)).toEqual(
+      MODEL_ROLES.flatMap(() => [modelOptions, [...THINKING_LEVELS]]),
+    );
+    expect(calls.confirm).toEqual([
+      {
+        title: "Save Software Factory role models?",
+        message: [
+          "scout: prov-a/model-a · off",
+          "architect: prov-b/model-b · minimal",
+          "implementer: prov-a/model-a · low",
+          "reviewer: prov-b/model-b · high",
+          "repairer: prov-a/model-a · max",
+        ].join("\n"),
+      },
+    ]);
+    expect(vi.mocked(persistModelRoles)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(persistModelRoles)).toHaveBeenCalledWith("/test/setup-command", selection, snapshot);
+    expect(calls.notify).toEqual([
+      {
+        message:
+          ".pi/software-factory.json updated. The new role assignments apply to the next /factory invocation.",
+        type: "info",
+      },
+    ]);
+    expect(vi.mocked(runFactory)).not.toHaveBeenCalled();
   });
 });
