@@ -1,7 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { loadConfig } from "./src/config.js";
+import { loadConfig, MODEL_ROLES } from "./src/config.js";
 import { runFactory } from "./src/controller.js";
+import { normalizeAvailableModels, persistModelRoles } from "./src/setup.js";
+import { collectModelRoles } from "./src/setup-ui.js";
 import { formatDuration, formatStageName, formatStageSummary, formatTokens } from "./src/stage-presentation.js";
 import type { ContextUsageSnapshot, FactoryProgressEvent, FactoryRunState, StageTelemetry, TokenUsageSnapshot } from "./src/types.js";
 
@@ -364,6 +366,7 @@ function findPersistedLastState(ctx: any): FactoryRunState | undefined {
 
 export default function softwareFactory(pi: ExtensionAPI) {
   let running = false;
+  let setupInProgress = false;
   let lastState: FactoryRunState | undefined;
   let lastObjective: string | undefined;
   let progressEvents: FactoryProgressEvent[] = [];
@@ -521,6 +524,75 @@ export default function softwareFactory(pi: ExtensionAPI) {
           ? [...activeStages.entries()].map(([key, info]) => activeStageName(key, info.model))
           : undefined,
       } satisfies TranscriptEntry);
+    },
+  });
+
+  pi.registerCommand("factory-setup", {
+    description: "Configure Software Factory role models",
+    handler: async (_args, ctx) => {
+      if (running) {
+        ctx.ui.notify(
+          "Setup cannot modify configuration while /factory is running. Wait for the run to finish.",
+          "warning",
+        );
+        return;
+      }
+      if (setupInProgress) {
+        ctx.ui.notify("A /factory-setup flow is already in progress in this Pi session.", "warning");
+        return;
+      }
+      if (ctx.hasUI === false) {
+        ctx.ui.notify("Interactive setup requires a Pi UI. Run /factory-setup in an interactive Pi session.", "warning");
+        return;
+      }
+
+      setupInProgress = true;
+      try {
+        const availableModels = normalizeAvailableModels(ctx.modelRegistry.getAvailable());
+        if (availableModels.length === 0) {
+          ctx.ui.notify("Pi exposes no available models. Configure a model provider and retry /factory-setup.", "warning");
+          return;
+        }
+
+        const selection = await collectModelRoles(
+          { select: (title, options) => ctx.ui.select(title, options) },
+          availableModels,
+        );
+        if (selection === undefined) {
+          ctx.ui.notify("Setup cancelled: no complete model selection was made.", "info");
+          return;
+        }
+
+        const summary = MODEL_ROLES.map((role) => {
+          const ref = selection[role];
+          return `${role}: ${ref.provider}/${ref.model} · ${ref.thinking}`;
+        }).join("\n");
+
+        const confirmed = await ctx.ui.confirm("Save Software Factory role models?", summary);
+        if (!confirmed) {
+          ctx.ui.notify("Setup cancelled: the model selection was not saved.", "info");
+          return;
+        }
+
+        if (running) {
+          ctx.ui.notify(
+            "A /factory run started while setup was in progress. Wait for it to finish, then retry /factory-setup.",
+            "warning",
+          );
+          return;
+        }
+
+        persistModelRoles(ctx.cwd, selection, availableModels);
+        ctx.ui.notify(
+          ".pi/software-factory.json updated. The new role assignments apply to the next /factory invocation.",
+          "info",
+        );
+      } catch (error: any) {
+        const message = error?.message ?? String(error);
+        ctx.ui.notify(`Factory setup failed: ${message}`, "error");
+      } finally {
+        setupInProgress = false;
+      }
     },
   });
 }
