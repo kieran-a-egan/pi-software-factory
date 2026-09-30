@@ -1199,4 +1199,52 @@ describe("/factory-setup", () => {
     ]);
     expect(vi.mocked(runFactory)).not.toHaveBeenCalled();
   });
+
+  it("warns and stops when there is no Pi UI", async () => {
+    const harness = createHarness();
+    const { ctx, calls } = createCtx({ hasUI: false });
+
+    await harness.commands.get("factory-setup")!.handler("", ctx);
+
+    expect(calls.notify).toEqual([
+      { message: "Interactive setup requires a Pi UI. Run /factory-setup in an interactive Pi session.", type: "warning" },
+    ]);
+    expect(ctx.modelRegistry.getAvailable).not.toHaveBeenCalled();
+    expect(calls.select).toEqual([]);
+    expect(calls.confirm).toEqual([]);
+    expect(vi.mocked(persistModelRoles)).not.toHaveBeenCalled();
+  });
+
+  it("warns when Pi exposes no available models", async () => {
+    const harness = createHarness();
+    const { ctx, calls } = createCtx();
+    vi.mocked(ctx.modelRegistry.getAvailable).mockReturnValue([]);
+
+    await harness.commands.get("factory-setup")!.handler("", ctx);
+
+    expect(ctx.modelRegistry.getAvailable).toHaveBeenCalledTimes(1);
+    expect(calls.notify).toEqual([
+      { message: "Pi exposes no available models. Configure a model provider and retry /factory-setup.", type: "warning" },
+    ]);
+    expect(calls.select).toEqual([]);
+    expect(calls.confirm).toEqual([]);
+    expect(vi.mocked(persistModelRoles)).not.toHaveBeenCalled();
+  });
+
+  it("cancels when the first selector returns no selection", async () => {
+    const harness = createHarness();
+    const { ctx, calls } = createCtx();
+    vi.mocked(ctx.modelRegistry.getAvailable).mockReturnValue([{ provider: "prov-a", id: "model-a" }]);
+
+    await harness.commands.get("factory-setup")!.handler("", ctx);
+
+    expect(ctx.modelRegistry.getAvailable).toHaveBeenCalledTimes(1);
+    expect(calls.select).toHaveLength(1);
+    expect(calls.select[0].title).toBe(`Select model for ${MODEL_ROLES[0]}`);
+    expect(calls.confirm).toEqual([]);
+    expect(vi.mocked(persistModelRoles)).not.toHaveBeenCalled();
+    expect(calls.notify).toEqual([
+      { message: "Setup cancelled: no complete model selection was made.", type: "info" },
+    ]);
+  });
 });
