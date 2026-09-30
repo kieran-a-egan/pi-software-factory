@@ -1247,4 +1247,86 @@ describe("/factory-setup", () => {
       { message: "Setup cancelled: no complete model selection was made.", type: "info" },
     ]);
   });
+
+  // Fixtures and scripting shared by the final-confirmation cancellation tests
+  // below; deliberately not hoisted into the other setup tests.
+  const CANCEL_REGISTRY = [
+    { provider: "prov-a", id: "model-a" },
+    { provider: "prov-b", id: "model-b" },
+  ];
+  const CANCEL_SELECTION: ModelRoles = {
+    scout: { provider: "prov-a", model: "model-a", thinking: "off" },
+    architect: { provider: "prov-b", model: "model-b", thinking: "minimal" },
+    implementer: { provider: "prov-a", model: "model-a", thinking: "low" },
+    reviewer: { provider: "prov-b", model: "model-b", thinking: "high" },
+    repairer: { provider: "prov-a", model: "model-a", thinking: "max" },
+  };
+
+  function scriptRoleSelections(ctx: ReturnType<typeof createCtx>["ctx"], calls: ReturnType<typeof createCtx>["calls"], selection: ModelRoles): void {
+    vi.mocked(ctx.ui.select).mockImplementation(async (title: string, options: string[]) => {
+      calls.select.push({ title, options });
+      const match = /^Select (model|thinking level) for (\S+)$/.exec(title);
+      const [, kind, role] = match!;
+      const ref = selection[role as keyof ModelRoles];
+      return kind === "model"
+        ? options.find((option) => option.includes(`${ref.provider}/${ref.model}`))
+        : ref.thinking;
+    });
+  }
+
+  it("does not save when the final confirmation is declined", async () => {
+    const harness = createHarness();
+    const { ctx, calls } = createCtx();
+    vi.mocked(ctx.modelRegistry.getAvailable).mockReturnValue(CANCEL_REGISTRY);
+    scriptRoleSelections(ctx, calls, CANCEL_SELECTION);
+    vi.mocked(ctx.ui.confirm).mockImplementation((title: string, message: string) => {
+      calls.confirm.push({ title, message });
+      return Promise.resolve(false);
+    });
+
+    await harness.commands.get("factory-setup")!.handler("", ctx);
+
+    expect(calls.confirm).toHaveLength(1);
+    expect(calls.confirm[0].title).toBe("Save Software Factory role models?");
+    expect(calls.notify).toEqual([
+      { message: "Setup cancelled: the model selection was not saved.", type: "info" },
+    ]);
+    expect(vi.mocked(persistModelRoles)).not.toHaveBeenCalled();
+  });
+
+  it("releases setup state after a cancelled flow so a retry can persist", async () => {
+    const harness = createHarness();
+    const { ctx, calls } = createCtx();
+    vi.mocked(ctx.modelRegistry.getAvailable).mockReturnValue(CANCEL_REGISTRY);
+    scriptRoleSelections(ctx, calls, CANCEL_SELECTION);
+    const confirmResults = [false, true];
+    vi.mocked(ctx.ui.confirm).mockImplementation((title: string, message: string) => {
+      calls.confirm.push({ title, message });
+      return Promise.resolve(confirmResults.shift() ?? true);
+    });
+
+    await harness.commands.get("factory-setup")!.handler("", ctx);
+
+    expect(calls.confirm).toHaveLength(1);
+    expect(calls.notify).toEqual([
+      { message: "Setup cancelled: the model selection was not saved.", type: "info" },
+    ]);
+    expect(vi.mocked(persistModelRoles)).not.toHaveBeenCalled();
+
+    // Same harness, same context, no mock resets: the second invocation must
+    // pass the in-progress guard and complete the setup.
+    await harness.commands.get("factory-setup")!.handler("", ctx);
+
+    expect(calls.confirm).toHaveLength(2);
+    expect(calls.notify).not.toContainEqual({
+      message: "A /factory-setup flow is already in progress in this Pi session.",
+      type: "warning",
+    });
+    expect(vi.mocked(persistModelRoles)).toHaveBeenCalledTimes(1);
+    expect(calls.notify).toContainEqual({
+      message:
+        ".pi/software-factory.json updated. The new role assignments apply to the next /factory invocation.",
+      type: "info",
+    });
+  });
 });
