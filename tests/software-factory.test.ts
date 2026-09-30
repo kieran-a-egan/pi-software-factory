@@ -1329,4 +1329,85 @@ describe("/factory-setup", () => {
       type: "info",
     });
   });
+
+  it("blocks setup while a factory run is active", async () => {
+    const harness = createHarness();
+    let release!: (state: FactoryRunState) => void;
+    const gate = new Promise<FactoryRunState>((resolve) => {
+      release = resolve;
+    });
+    vi.mocked(runFactory).mockImplementation(async () => gate);
+
+    const { ctx } = createCtx();
+    const pending = harness.run("first run", ctx);
+
+    const { ctx: ctx2, calls: calls2 } = createCtx();
+    try {
+      expect(vi.mocked(runFactory)).toHaveBeenCalledTimes(1);
+
+      await harness.commands.get("factory-setup")!.handler("", ctx2);
+
+      expect(ctx2.modelRegistry.getAvailable).not.toHaveBeenCalled();
+      expect(ctx2.ui.select).not.toHaveBeenCalled();
+      expect(ctx2.ui.confirm).not.toHaveBeenCalled();
+      expect(calls2.select).toEqual([]);
+      expect(calls2.confirm).toEqual([]);
+      expect(vi.mocked(persistModelRoles)).not.toHaveBeenCalled();
+      expect(calls2.notify).toEqual([
+        {
+          message: "Setup cannot modify configuration while /factory is running. Wait for the run to finish.",
+          type: "warning",
+        },
+      ]);
+    } finally {
+      release(makeFinalState());
+      await pending;
+    }
+  });
+
+  it("refuses a second setup flow while one is in progress", async () => {
+    const harness = createHarness();
+    let releaseSelect!: (answer: string | undefined) => void;
+    const selectGate = new Promise<string | undefined>((resolve) => {
+      releaseSelect = resolve;
+    });
+    const { ctx, calls } = createCtx();
+    vi.mocked(ctx.modelRegistry.getAvailable).mockReturnValue([{ provider: "prov-a", id: "model-a" }]);
+    vi.mocked(ctx.ui.select).mockImplementation(async (title: string, options: string[]) => {
+      calls.select.push({ title, options });
+      return selectGate;
+    });
+
+    const firstSetup = harness.commands.get("factory-setup")!.handler("", ctx);
+
+    const { ctx: ctx2, calls: calls2 } = createCtx();
+    try {
+      expect(ctx.modelRegistry.getAvailable).toHaveBeenCalledTimes(1);
+      expect(ctx.ui.select).toHaveBeenCalledTimes(1);
+      expect(calls.select).toHaveLength(1);
+      expect(calls.select[0].title).toBe(`Select model for ${MODEL_ROLES[0]}`);
+
+      await harness.commands.get("factory-setup")!.handler("", ctx2);
+
+      expect(ctx2.modelRegistry.getAvailable).not.toHaveBeenCalled();
+      expect(ctx2.ui.select).not.toHaveBeenCalled();
+      expect(ctx2.ui.confirm).not.toHaveBeenCalled();
+      expect(calls2.select).toEqual([]);
+      expect(calls2.confirm).toEqual([]);
+      expect(vi.mocked(persistModelRoles)).not.toHaveBeenCalled();
+      expect(calls2.notify).toEqual([
+        { message: "A /factory-setup flow is already in progress in this Pi session.", type: "warning" },
+      ]);
+
+      // The refused call must leave the parked first flow untouched: only its
+      // first selector fired, and no confirmation was reached.
+      expect(ctx.ui.select).toHaveBeenCalledTimes(1);
+      expect(ctx.ui.confirm).not.toHaveBeenCalled();
+      expect(calls.select).toHaveLength(1);
+      expect(calls.confirm).toEqual([]);
+    } finally {
+      releaseSelect(undefined);
+      await firstSetup;
+    }
+  });
 });
