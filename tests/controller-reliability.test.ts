@@ -570,7 +570,7 @@ describe("controller release reliability", () => {
     expect(state.reviewRouting?.outcome).toBe("human-fallback");
   });
 
-  it("a clean Astra review and Jev accept cannot override failed deterministic verification after the default budget is exhausted", async () => {
+  it("a clean review and Jev accept cannot override failed deterministic verification after the default budget is exhausted", async () => {
     config.verificationCommands = ['node -e "process.exit(require(\'fs\').readFileSync(\'a.txt\',\'utf8\').startsWith(\'baseline\')?0:1)"'];
     const state = await run();
     expect(state.baselineVerification?.passed).toBe(true);
@@ -583,7 +583,7 @@ describe("controller release reliability", () => {
     expect(state.sourceDisposition?.disposition).toBe("retained-unaccepted");
   });
 
-  it("a clean Astra review and confident accept still cannot accept failed verification after an explicit deterministic budget is exhausted", async () => {
+  it("a clean review and confident accept still cannot accept failed verification after an explicit deterministic budget is exhausted", async () => {
     config.verificationCommands = ['node -e "process.exit(require(\'fs\').readFileSync(\'a.txt\',\'utf8\').startsWith(\'baseline\')?0:1)"'];
     config.maxDeterministicRepairPasses = 2;
     const state = await run();
@@ -694,7 +694,7 @@ describe("controller release reliability", () => {
     // "completed" progress event.
     const intermediate: Array<{ deterministicRepairPasses: number; reviewRepairPasses: number; repairPasses: number }> = [];
     const progress = (event: { type: string; telemetry?: { stage: string } }) => {
-      if (event.type !== "completed" || event.telemetry?.stage !== "qwen-repair") return;
+      if (event.type !== "completed" || event.telemetry?.stage !== "repairer") return;
       const [runId] = readdirSync(join(cwd, config.runRoot));
       const persisted = json(join(cwd, config.runRoot, runId), "state.json");
       intermediate.push({
@@ -803,11 +803,11 @@ describe("controller release reliability", () => {
     expect(files).toContain("review-repair-1.json");
     expect(files).toContain("review-repair-gate-1.json");
     const checkpoint = json(runDir(state), "checkpoint-review-repair-1-1.json");
-    expect(checkpoint).toMatchObject({ stage: "qwen-repair", label: "review repair 1", index: 1 });
+    expect(checkpoint).toMatchObject({ stage: "repairer", label: "review repair 1", index: 1 });
     expect(checkpoint.checkpoint).toMatchObject({ unitId: "review-repair-1" });
     expect(checkpoint.context).toMatchObject({ tokens: 70_000 });
     expect(state.checkpoints).toHaveLength(1);
-    expect(state.checkpoints?.[0]).toMatchObject({ stage: "qwen-repair", label: "review repair 1", index: 1 });
+    expect(state.checkpoints?.[0]).toMatchObject({ stage: "repairer", label: "review repair 1", index: 1 });
     // Both repair segments (original and checkpoint-resumed) resolved the
     // repairer role's ModelRef, and telemetry reports the resolved model.
     const repairerCalls = runnerCalls.filter((call) => call.fn === "runCheckpointableAgent" && call.role === "repairer");
@@ -815,9 +815,9 @@ describe("controller release reliability", () => {
       { fn: "runCheckpointableAgent", role: "repairer", model: roleModels.repairer },
       { fn: "runCheckpointableAgent", role: "repairer", model: roleModels.repairer },
     ]);
-    expect(state.telemetry?.filter((stage) => stage.stage === "qwen-repair").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
-      ["qwen-repair", "qwen", "prov-repairer/model-repairer", "completed"],
-      ["qwen-repair", "qwen", "prov-repairer/model-repairer", "completed"],
+    expect(state.telemetry?.filter((stage) => stage.stage === "repairer").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
+      ["repairer", "agent", "prov-repairer/model-repairer", "completed"],
+      ["repairer", "agent", "prov-repairer/model-repairer", "completed"],
     ]);
     expect(json(runDir(state), "state.json")).toMatchObject({ deterministicRepairPasses: 0, reviewRepairPasses: 1, repairPasses: 1 });
     expect(json(runDir(state), "run-summary.json")).toMatchObject({ deterministicRepairPasses: 0, reviewRepairPasses: 1, repairPasses: 1 });
@@ -894,9 +894,9 @@ describe("controller release reliability", () => {
       { fn: "runCheckpointableAgent", role: "repairer", model: roleModels.repairer },
       { fn: "runCheckpointableAgent", role: "repairer", model: roleModels.repairer },
     ]);
-    expect(state.telemetry?.filter((stage) => stage.stage === "qwen-repair").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
-      ["qwen-repair", "qwen", "prov-repairer/model-repairer", "completed"],
-      ["qwen-repair", "qwen", "prov-repairer/model-repairer", "completed"],
+    expect(state.telemetry?.filter((stage) => stage.stage === "repairer").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
+      ["repairer", "agent", "prov-repairer/model-repairer", "completed"],
+      ["repairer", "agent", "prov-repairer/model-repairer", "completed"],
     ]);
   });
 
@@ -918,7 +918,7 @@ describe("controller release reliability", () => {
     expect(files).not.toContain("review-repair-1.json");
     expect(files).not.toContain("verification-after-deterministic-repair-1.json");
     expect(files).not.toContain("verification-after-review-repair-1.json");
-    expect(state.telemetry?.some((stage) => stage.stage === "qwen-repair")).toBe(false);
+    expect(state.telemetry?.some((stage) => stage.stage === "repairer")).toBe(false);
     expect(state.reviewRouting?.outcome).toBe("human-fallback");
     expect(json(runDir(state), "state.json")).toMatchObject({ deterministicRepairPasses: 0, reviewRepairPasses: 0, repairPasses: 0 });
     expect(json(runDir(state), "run-summary.json")).toMatchObject({ deterministicRepairPasses: 0, reviewRepairPasses: 0, repairPasses: 0 });
@@ -957,8 +957,8 @@ describe("controller release reliability", () => {
     // Only implementation workers contribute to state.workers; repair reports
     // are pass-scoped artifacts, not implementation evidence.
     expect(state.workers?.map((report) => report.unitId)).toEqual(["a", "b"]);
-    expect(state.telemetry?.filter((stage) => stage.stage === "qwen-implement")).toHaveLength(2);
-    expect(state.telemetry?.filter((stage) => stage.stage === "qwen-repair")).toHaveLength(2);
+    expect(state.telemetry?.filter((stage) => stage.stage === "implementer")).toHaveLength(2);
+    expect(state.telemetry?.filter((stage) => stage.stage === "repairer")).toHaveLength(2);
     const files = readdirSync(runDir(state));
     expect(files).not.toContain("review-repair-1.json");
     expect(files).toContain("deterministic-repair-1.json");
@@ -1305,10 +1305,10 @@ describe("controller release reliability", () => {
       { fn: "runCheckpointableAgent", role: "implementer", model: roleModels.implementer },
       { fn: "runCheckpointableAgent", role: "implementer", model: roleModels.implementer },
     ]);
-    expect(state.telemetry?.filter((stage) => stage.stage === "qwen-implement").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
-      ["qwen-implement", "qwen", "prov-implementer/model-implementer", "completed"],
-      ["qwen-implement", "qwen", "prov-implementer/model-implementer", "completed"],
-      ["qwen-implement", "qwen", "prov-implementer/model-implementer", "completed"],
+    expect(state.telemetry?.filter((stage) => stage.stage === "implementer").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
+      ["implementer", "agent", "prov-implementer/model-implementer", "completed"],
+      ["implementer", "agent", "prov-implementer/model-implementer", "completed"],
+      ["implementer", "agent", "prov-implementer/model-implementer", "completed"],
     ]);
   });
 
@@ -1352,10 +1352,10 @@ describe("controller release reliability", () => {
       { fn: "runCheckpointableAgent", role: "implementer", model: roleModels.implementer },
       { fn: "runCheckpointableAgent", role: "implementer", model: roleModels.implementer },
     ]);
-    expect(state.telemetry?.filter((stage) => stage.stage === "qwen-implement").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
-      ["qwen-implement", "qwen", "prov-implementer/model-implementer", "completed"],
-      ["qwen-implement", "qwen", "prov-implementer/model-implementer", "completed"],
-      ["qwen-implement", "qwen", "prov-implementer/model-implementer", "completed"],
+    expect(state.telemetry?.filter((stage) => stage.stage === "implementer").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
+      ["implementer", "agent", "prov-implementer/model-implementer", "completed"],
+      ["implementer", "agent", "prov-implementer/model-implementer", "completed"],
+      ["implementer", "agent", "prov-implementer/model-implementer", "completed"],
     ]);
   });
 
@@ -1384,7 +1384,7 @@ describe("controller release reliability", () => {
     }
   });
 
-  it("routes qwen-scout to models.scout and astra-architect/astra-review to their role ModelRefs", async () => {
+  it("routes scout to models.scout and architect/reviewer to their role ModelRefs", async () => {
     config.models = structuredClone(roleModels);
     const state = await run();
     expect(state.finalStatus).toBe("accepted");
@@ -1393,18 +1393,18 @@ describe("controller release reliability", () => {
       { fn: "runAgent", role: "architect", model: roleModels.architect },
       { fn: "runAgent", role: "reviewer", model: roleModels.reviewer },
     ]);
-    expect(state.telemetry?.find((stage) => stage.stage === "qwen-scout")).toMatchObject({
-      stage: "qwen-scout", actor: "qwen", model: "prov-scout/model-scout", outcome: "completed",
+    expect(state.telemetry?.find((stage) => stage.stage === "scout")).toMatchObject({
+      stage: "scout", actor: "agent", model: "prov-scout/model-scout", outcome: "completed",
     });
-    expect(state.telemetry?.find((stage) => stage.stage === "astra-architect")).toMatchObject({
-      stage: "astra-architect", actor: "astra", model: "prov-architect/model-architect", outcome: "completed",
+    expect(state.telemetry?.find((stage) => stage.stage === "architect")).toMatchObject({
+      stage: "architect", actor: "agent", model: "prov-architect/model-architect", outcome: "completed",
     });
-    expect(state.telemetry?.find((stage) => stage.stage === "astra-review")).toMatchObject({
-      stage: "astra-review", actor: "astra", model: "prov-reviewer/model-reviewer", outcome: "completed",
+    expect(state.telemetry?.find((stage) => stage.stage === "reviewer")).toMatchObject({
+      stage: "reviewer", actor: "agent", model: "prov-reviewer/model-reviewer", outcome: "completed",
     });
   });
 
-  it("routes qwen-rescout and the post-rescout astra-replan to their role ModelRefs", async () => {
+  it("routes rescout and the post-rescout replan to their role ModelRefs", async () => {
     config.models = structuredClone(roleModels);
     vi.mocked(JevDecisionEngine.prototype.gatePlan).mockResolvedValueOnce({
       action: "rescout", confidence: 1, planCompleteProbability: 1, implementationRisk: "low", rescoutFocus: "dependencies", replanFocus: "none", raw: {},
@@ -1418,7 +1418,7 @@ describe("controller release reliability", () => {
     expect(state.finalStatus, state.finalReason).toBe("accepted");
     expect(state.rescoutPasses).toBe(1);
     // The rescout loop re-runs the scout and then the architect (replan); the
-    // run then proceeds to the initial astra-review as usual.
+    // run then proceeds to the initial review as usual.
     expect(runnerCalls.filter((call) => call.fn === "runAgent")).toEqual([
       { fn: "runAgent", role: "scout", model: roleModels.scout },
       { fn: "runAgent", role: "architect", model: roleModels.architect },
@@ -1429,24 +1429,24 @@ describe("controller release reliability", () => {
     // Started progress events carry the same role selection as the runners,
     // including the planning-loop rescout and post-rescout replan stages.
     expect(started).toEqual([
-      ["qwen-scout", undefined, "prov-scout/model-scout"],
-      ["astra-architect", undefined, "prov-architect/model-architect"],
-      ["qwen-rescout", "pass 1 · dependencies", "prov-scout/model-scout"],
-      ["astra-replan", "after rescout 1", "prov-architect/model-architect"],
-      ["qwen-implement", "implementation unit a", "prov-implementer/model-implementer"],
-      ["qwen-implement", "implementation unit b", "prov-implementer/model-implementer"],
-      ["astra-review", undefined, "prov-reviewer/model-reviewer"],
+      ["scout", undefined, "prov-scout/model-scout"],
+      ["architect", undefined, "prov-architect/model-architect"],
+      ["scout", "rescout pass 1 · dependencies", "prov-scout/model-scout"],
+      ["architect", "replan pass 1 · after rescout 1", "prov-architect/model-architect"],
+      ["implementer", "implementation unit a", "prov-implementer/model-implementer"],
+      ["implementer", "implementation unit b", "prov-implementer/model-implementer"],
+      ["reviewer", undefined, "prov-reviewer/model-reviewer"],
     ]);
-    expect(state.telemetry?.find((stage) => stage.stage === "qwen-rescout")).toMatchObject({
-      stage: "qwen-rescout", label: "pass 1 · dependencies", actor: "qwen", model: "prov-scout/model-scout", outcome: "completed",
+    expect(state.telemetry?.find((stage) => stage.stage === "scout" && stage.label !== undefined)).toMatchObject({
+      stage: "scout", label: "rescout pass 1 · dependencies", actor: "agent", model: "prov-scout/model-scout", outcome: "completed",
     });
-    expect(state.telemetry?.find((stage) => stage.stage === "astra-replan")).toMatchObject({
-      stage: "astra-replan", label: "after rescout 1", actor: "astra", model: "prov-architect/model-architect", outcome: "completed",
+    expect(state.telemetry?.find((stage) => stage.stage === "architect" && stage.label !== undefined)).toMatchObject({
+      stage: "architect", label: "replan pass 1 · after rescout 1", actor: "agent", model: "prov-architect/model-architect", outcome: "completed",
     });
     expect(json(runDir(state), "architecture-after-rescout-1.json")).toEqual(state.architecture);
   });
 
-  it("routes an explicit astra-replan to models.architect with the replan focus label", async () => {
+  it("routes an explicit replan to models.architect with the replan focus label", async () => {
     config.models = structuredClone(roleModels);
     vi.mocked(JevDecisionEngine.prototype.gatePlan).mockResolvedValueOnce({
       action: "replan", confidence: 1, planCompleteProbability: 1, implementationRisk: "low", rescoutFocus: "none", replanFocus: "scope", raw: {},
@@ -1466,20 +1466,20 @@ describe("controller release reliability", () => {
     // The explicit replan route reports the architect role's model on its
     // started event with the replan focus label.
     expect(started).toEqual([
-      ["qwen-scout", undefined, "prov-scout/model-scout"],
-      ["astra-architect", undefined, "prov-architect/model-architect"],
-      ["astra-replan", "pass 1 · scope", "prov-architect/model-architect"],
-      ["qwen-implement", "implementation unit a", "prov-implementer/model-implementer"],
-      ["qwen-implement", "implementation unit b", "prov-implementer/model-implementer"],
-      ["astra-review", undefined, "prov-reviewer/model-reviewer"],
+      ["scout", undefined, "prov-scout/model-scout"],
+      ["architect", undefined, "prov-architect/model-architect"],
+      ["architect", "replan pass 1 · scope", "prov-architect/model-architect"],
+      ["implementer", "implementation unit a", "prov-implementer/model-implementer"],
+      ["implementer", "implementation unit b", "prov-implementer/model-implementer"],
+      ["reviewer", undefined, "prov-reviewer/model-reviewer"],
     ]);
-    expect(state.telemetry?.find((stage) => stage.stage === "astra-replan")).toMatchObject({
-      stage: "astra-replan", label: "pass 1 · scope", actor: "astra", model: "prov-architect/model-architect", outcome: "completed",
+    expect(state.telemetry?.find((stage) => stage.stage === "architect" && stage.label !== undefined)).toMatchObject({
+      stage: "architect", label: "replan pass 1 · scope", actor: "agent", model: "prov-architect/model-architect", outcome: "completed",
     });
     expect(json(runDir(state), "architecture-replan-1.json")).toEqual(state.architecture);
   });
 
-  it("routes sequential qwen-implement workers to models.implementer", async () => {
+  it("routes sequential implementer workers to models.implementer", async () => {
     config.models = structuredClone(roleModels);
     const state = await run();
     expect(state.finalStatus).toBe("accepted");
@@ -1487,13 +1487,13 @@ describe("controller release reliability", () => {
       { fn: "runCheckpointableAgent", role: "implementer", model: roleModels.implementer },
       { fn: "runCheckpointableAgent", role: "implementer", model: roleModels.implementer },
     ]);
-    expect(state.telemetry?.filter((stage) => stage.stage === "qwen-implement").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
-      ["qwen-implement", "qwen", "prov-implementer/model-implementer", "completed"],
-      ["qwen-implement", "qwen", "prov-implementer/model-implementer", "completed"],
+    expect(state.telemetry?.filter((stage) => stage.stage === "implementer").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
+      ["implementer", "agent", "prov-implementer/model-implementer", "completed"],
+      ["implementer", "agent", "prov-implementer/model-implementer", "completed"],
     ]);
   });
 
-  it("routes parallel qwen-implement workers to models.implementer", async () => {
+  it("routes parallel implementer workers to models.implementer", async () => {
     config.models = structuredClone(roleModels);
     config.parallelImplementation.enabled = true;
     const state = await run();
@@ -1503,13 +1503,13 @@ describe("controller release reliability", () => {
       { fn: "runCheckpointableAgent", role: "implementer", model: roleModels.implementer },
       { fn: "runCheckpointableAgent", role: "implementer", model: roleModels.implementer },
     ]);
-    expect(state.telemetry?.filter((stage) => stage.stage === "qwen-implement").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
-      ["qwen-implement", "qwen", "prov-implementer/model-implementer", "completed"],
-      ["qwen-implement", "qwen", "prov-implementer/model-implementer", "completed"],
+    expect(state.telemetry?.filter((stage) => stage.stage === "implementer").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
+      ["implementer", "agent", "prov-implementer/model-implementer", "completed"],
+      ["implementer", "agent", "prov-implementer/model-implementer", "completed"],
     ]);
   });
 
-  it("routes the initial and post-repair astra-review to models.reviewer, never models.architect", async () => {
+  it("routes the initial and post-repair reviews to models.reviewer, never models.architect", async () => {
     config.models = structuredClone(roleModels);
     const requested: ReviewResult = {
       summary: "changes requested",
@@ -1528,13 +1528,13 @@ describe("controller release reliability", () => {
       { fn: "runAgent", role: "reviewer", model: roleModels.reviewer },
     ]);
     for (const call of reviewerCalls) expect(call.model).not.toEqual(roleModels.architect);
-    expect(state.telemetry?.filter((stage) => stage.stage === "astra-review").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
-      ["astra-review", "astra", "prov-reviewer/model-reviewer", "completed"],
-      ["astra-review", "astra", "prov-reviewer/model-reviewer", "completed"],
+    expect(state.telemetry?.filter((stage) => stage.stage === "reviewer").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
+      ["reviewer", "agent", "prov-reviewer/model-reviewer", "completed"],
+      ["reviewer", "agent", "prov-reviewer/model-reviewer", "completed"],
     ]);
   });
 
-  it("routes both deterministic and review qwen-repair workers to models.repairer, never models.implementer", async () => {
+  it("routes both deterministic and review repairer workers to models.repairer, never models.implementer", async () => {
     config.models = structuredClone(roleModels);
     const check = 'node -e "process.exit(require(\'fs\').readFileSync(\'a.txt\',\'utf8\').startsWith(\'good\')?0:1)"';
     config.verificationCommands = [check];
@@ -1578,21 +1578,21 @@ describe("controller release reliability", () => {
     for (const call of runnerCalls.filter((call) => call.fn === "runCheckpointableAgent" && call.role === "repairer")) {
       expect(call.model).not.toEqual(roleModels.implementer);
     }
-    expect(state.telemetry?.filter((stage) => stage.stage === "qwen-repair").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
-      ["qwen-repair", "qwen", "prov-repairer/model-repairer", "completed"],
-      ["qwen-repair", "qwen", "prov-repairer/model-repairer", "completed"],
+    expect(state.telemetry?.filter((stage) => stage.stage === "repairer").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
+      ["repairer", "agent", "prov-repairer/model-repairer", "completed"],
+      ["repairer", "agent", "prov-repairer/model-repairer", "completed"],
     ]);
     // Both repair classes and the post-repair review keep their role models on
     // started events.
     expect(started).toEqual([
-      ["qwen-scout", undefined, "prov-scout/model-scout"],
-      ["astra-architect", undefined, "prov-architect/model-architect"],
-      ["qwen-implement", "implementation unit a", "prov-implementer/model-implementer"],
-      ["qwen-implement", "implementation unit b", "prov-implementer/model-implementer"],
-      ["qwen-repair", "deterministic repair 1", "prov-repairer/model-repairer"],
-      ["astra-review", undefined, "prov-reviewer/model-reviewer"],
-      ["qwen-repair", "review repair 1", "prov-repairer/model-repairer"],
-      ["astra-review", "after review repair 1", "prov-reviewer/model-reviewer"],
+      ["scout", undefined, "prov-scout/model-scout"],
+      ["architect", undefined, "prov-architect/model-architect"],
+      ["implementer", "implementation unit a", "prov-implementer/model-implementer"],
+      ["implementer", "implementation unit b", "prov-implementer/model-implementer"],
+      ["repairer", "deterministic repair 1", "prov-repairer/model-repairer"],
+      ["reviewer", undefined, "prov-reviewer/model-reviewer"],
+      ["repairer", "review repair 1", "prov-repairer/model-repairer"],
+      ["reviewer", "after review repair 1", "prov-reviewer/model-reviewer"],
     ]);
   });
 
@@ -1645,9 +1645,9 @@ describe("controller release reliability", () => {
     expect(deterministicSegments).toBe(2);
     expect(workerCalls).toBe(4);
     expect(state.checkpoints).toHaveLength(1);
-    expect(state.checkpoints?.[0]).toMatchObject({ stage: "qwen-repair", label: "deterministic repair 1", index: 1 });
+    expect(state.checkpoints?.[0]).toMatchObject({ stage: "repairer", label: "deterministic repair 1", index: 1 });
     const checkpoint = json(runDir(state), "checkpoint-deterministic-repair-1-1.json");
-    expect(checkpoint).toMatchObject({ stage: "qwen-repair", label: "deterministic repair 1", index: 1 });
+    expect(checkpoint).toMatchObject({ stage: "repairer", label: "deterministic repair 1", index: 1 });
     // The repair worker's unit id is verification-repair-<pass>; the artifact
     // stem remains deterministic-repair-<pass>.
     expect(checkpoint.checkpoint).toMatchObject({ unitId: "verification-repair-1" });
@@ -1658,19 +1658,19 @@ describe("controller release reliability", () => {
       { fn: "runCheckpointableAgent", role: "repairer", model: roleModels.repairer },
       { fn: "runCheckpointableAgent", role: "repairer", model: roleModels.repairer },
     ]);
-    expect(state.telemetry?.filter((stage) => stage.stage === "qwen-repair").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
-      ["qwen-repair", "qwen", "prov-repairer/model-repairer", "completed"],
-      ["qwen-repair", "qwen", "prov-repairer/model-repairer", "completed"],
+    expect(state.telemetry?.filter((stage) => stage.stage === "repairer").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
+      ["repairer", "agent", "prov-repairer/model-repairer", "completed"],
+      ["repairer", "agent", "prov-repairer/model-repairer", "completed"],
     ]);
     // The resumed repair segment starts under the same repairer model.
     expect(started).toEqual([
-      ["qwen-scout", undefined, "prov-scout/model-scout"],
-      ["astra-architect", undefined, "prov-architect/model-architect"],
-      ["qwen-implement", "implementation unit a", "prov-implementer/model-implementer"],
-      ["qwen-implement", "implementation unit b", "prov-implementer/model-implementer"],
-      ["qwen-repair", "deterministic repair 1", "prov-repairer/model-repairer"],
-      ["qwen-repair", "deterministic repair 1 · resume 1", "prov-repairer/model-repairer"],
-      ["astra-review", undefined, "prov-reviewer/model-reviewer"],
+      ["scout", undefined, "prov-scout/model-scout"],
+      ["architect", undefined, "prov-architect/model-architect"],
+      ["implementer", "implementation unit a", "prov-implementer/model-implementer"],
+      ["implementer", "implementation unit b", "prov-implementer/model-implementer"],
+      ["repairer", "deterministic repair 1", "prov-repairer/model-repairer"],
+      ["repairer", "deterministic repair 1 · resume 1", "prov-repairer/model-repairer"],
+      ["reviewer", undefined, "prov-reviewer/model-reviewer"],
     ]);
     // The persisted StageTelemetry records the same role selection, including
     // the resumed repair segment.
@@ -1678,13 +1678,13 @@ describe("controller release reliability", () => {
       .filter((stage: any) => stage.model !== undefined && stage.model !== config.jev.model)
       .map((stage: any) => [stage.stage, stage.label, stage.model, stage.outcome]))
       .toEqual([
-        ["qwen-scout", undefined, "prov-scout/model-scout", "completed"],
-        ["astra-architect", undefined, "prov-architect/model-architect", "completed"],
-        ["qwen-implement", "implementation unit a", "prov-implementer/model-implementer", "completed"],
-        ["qwen-implement", "implementation unit b", "prov-implementer/model-implementer", "completed"],
-        ["qwen-repair", "deterministic repair 1", "prov-repairer/model-repairer", "completed"],
-        ["qwen-repair", "deterministic repair 1 · resume 1", "prov-repairer/model-repairer", "completed"],
-        ["astra-review", undefined, "prov-reviewer/model-reviewer", "completed"],
+        ["scout", undefined, "prov-scout/model-scout", "completed"],
+        ["architect", undefined, "prov-architect/model-architect", "completed"],
+        ["implementer", "implementation unit a", "prov-implementer/model-implementer", "completed"],
+        ["implementer", "implementation unit b", "prov-implementer/model-implementer", "completed"],
+        ["repairer", "deterministic repair 1", "prov-repairer/model-repairer", "completed"],
+        ["repairer", "deterministic repair 1 · resume 1", "prov-repairer/model-repairer", "completed"],
+        ["reviewer", undefined, "prov-reviewer/model-reviewer", "completed"],
       ]);
     expect(json(runDir(state), "verification-after-deterministic-repair-1.json").passed).toBe(true);
   });
@@ -1739,21 +1739,21 @@ describe("controller release reliability", () => {
       { fn: "runCheckpointableAgent", role: "repairer", model: roleModels.repairer },
       { fn: "runCheckpointableAgent", role: "repairer", model: roleModels.repairer },
     ]);
-    expect(state.telemetry?.filter((stage) => stage.stage === "qwen-repair").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
-      ["qwen-repair", "qwen", "prov-repairer/model-repairer", "completed"],
-      ["qwen-repair", "qwen", "prov-repairer/model-repairer", "completed"],
+    expect(state.telemetry?.filter((stage) => stage.stage === "repairer").map((stage) => [stage.stage, stage.actor, stage.model, stage.outcome])).toEqual([
+      ["repairer", "agent", "prov-repairer/model-repairer", "completed"],
+      ["repairer", "agent", "prov-repairer/model-repairer", "completed"],
     ]);
     // The continuation segment and the post-repair review keep their role
     // models on started events.
     expect(started).toEqual([
-      ["qwen-scout", undefined, "prov-scout/model-scout"],
-      ["astra-architect", undefined, "prov-architect/model-architect"],
-      ["qwen-implement", "implementation unit a", "prov-implementer/model-implementer"],
-      ["qwen-implement", "implementation unit b", "prov-implementer/model-implementer"],
-      ["astra-review", undefined, "prov-reviewer/model-reviewer"],
-      ["qwen-repair", "review repair 1", "prov-repairer/model-repairer"],
-      ["qwen-repair", "review repair 1 · continue 1", "prov-repairer/model-repairer"],
-      ["astra-review", "after review repair 1", "prov-reviewer/model-reviewer"],
+      ["scout", undefined, "prov-scout/model-scout"],
+      ["architect", undefined, "prov-architect/model-architect"],
+      ["implementer", "implementation unit a", "prov-implementer/model-implementer"],
+      ["implementer", "implementation unit b", "prov-implementer/model-implementer"],
+      ["reviewer", undefined, "prov-reviewer/model-reviewer"],
+      ["repairer", "review repair 1", "prov-repairer/model-repairer"],
+      ["repairer", "review repair 1 · continue 1", "prov-repairer/model-repairer"],
+      ["reviewer", "after review repair 1", "prov-reviewer/model-reviewer"],
     ]);
     // The persisted StageTelemetry records the same role selection, including
     // the continued repair segment and the post-repair review.
@@ -1761,14 +1761,14 @@ describe("controller release reliability", () => {
       .filter((stage: any) => stage.model !== undefined && stage.model !== config.jev.model)
       .map((stage: any) => [stage.stage, stage.label, stage.model, stage.outcome]))
       .toEqual([
-        ["qwen-scout", undefined, "prov-scout/model-scout", "completed"],
-        ["astra-architect", undefined, "prov-architect/model-architect", "completed"],
-        ["qwen-implement", "implementation unit a", "prov-implementer/model-implementer", "completed"],
-        ["qwen-implement", "implementation unit b", "prov-implementer/model-implementer", "completed"],
-        ["astra-review", undefined, "prov-reviewer/model-reviewer", "completed"],
-        ["qwen-repair", "review repair 1", "prov-repairer/model-repairer", "completed"],
-        ["qwen-repair", "review repair 1 · continue 1", "prov-repairer/model-repairer", "completed"],
-        ["astra-review", "after review repair 1", "prov-reviewer/model-reviewer", "completed"],
+        ["scout", undefined, "prov-scout/model-scout", "completed"],
+        ["architect", undefined, "prov-architect/model-architect", "completed"],
+        ["implementer", "implementation unit a", "prov-implementer/model-implementer", "completed"],
+        ["implementer", "implementation unit b", "prov-implementer/model-implementer", "completed"],
+        ["reviewer", undefined, "prov-reviewer/model-reviewer", "completed"],
+        ["repairer", "review repair 1", "prov-repairer/model-repairer", "completed"],
+        ["repairer", "review repair 1 · continue 1", "prov-repairer/model-repairer", "completed"],
+        ["reviewer", "after review repair 1", "prov-reviewer/model-reviewer", "completed"],
       ]);
   });
 
@@ -1799,12 +1799,12 @@ describe("controller release reliability", () => {
     // Model-backed stages, in execution order, each report the selected
     // role's configured provider/model — including the resumed segment.
     const expected: Array<[string, string]> = [
-      ["qwen-scout", "prov-scout/model-scout"],
-      ["astra-architect", "prov-architect/model-architect"],
-      ["qwen-implement", "prov-implementer/model-implementer"],
-      ["qwen-implement", "prov-implementer/model-implementer"],
-      ["qwen-implement", "prov-implementer/model-implementer"],
-      ["astra-review", "prov-reviewer/model-reviewer"],
+      ["scout", "prov-scout/model-scout"],
+      ["architect", "prov-architect/model-architect"],
+      ["implementer", "prov-implementer/model-implementer"],
+      ["implementer", "prov-implementer/model-implementer"],
+      ["implementer", "prov-implementer/model-implementer"],
+      ["reviewer", "prov-reviewer/model-reviewer"],
     ];
     expect(started).toEqual(expected);
     expect((state.telemetry ?? [])
@@ -1817,12 +1817,12 @@ describe("controller release reliability", () => {
       .filter((stage: any) => stage.model !== undefined && stage.model !== config.jev.model)
       .map((stage: any) => [stage.stage, stage.label, stage.model, stage.outcome]))
       .toEqual([
-        ["qwen-scout", undefined, "prov-scout/model-scout", "completed"],
-        ["astra-architect", undefined, "prov-architect/model-architect", "completed"],
-        ["qwen-implement", "implementation unit a", "prov-implementer/model-implementer", "completed"],
-        ["qwen-implement", "implementation unit a · resume 1", "prov-implementer/model-implementer", "completed"],
-        ["qwen-implement", "implementation unit b", "prov-implementer/model-implementer", "completed"],
-        ["astra-review", undefined, "prov-reviewer/model-reviewer", "completed"],
+        ["scout", undefined, "prov-scout/model-scout", "completed"],
+        ["architect", undefined, "prov-architect/model-architect", "completed"],
+        ["implementer", "implementation unit a", "prov-implementer/model-implementer", "completed"],
+        ["implementer", "implementation unit a · resume 1", "prov-implementer/model-implementer", "completed"],
+        ["implementer", "implementation unit b", "prov-implementer/model-implementer", "completed"],
+        ["reviewer", undefined, "prov-reviewer/model-reviewer", "completed"],
       ]);
   });
 
@@ -1845,11 +1845,193 @@ describe("controller release reliability", () => {
       if (event.type === "started") started.push([event.stage, event.model]);
     });
     expect(state.finalStatus).toBe("accepted");
-    expect(started.find(([stage]) => stage === "qwen-scout")).toEqual(["qwen-scout", "prov-scout/model-scout"]);
-    const scoutTelemetry = state.telemetry?.find((stage) => stage.stage === "qwen-scout");
+    expect(started.find(([stage]) => stage === "scout")).toEqual(["scout", "prov-scout/model-scout"]);
+    const scoutTelemetry = state.telemetry?.find((stage) => stage.stage === "scout");
     expect(scoutTelemetry?.model).toBe("runtime-resolved/scout-model");
     expect(scoutTelemetry?.model).not.toBe("prov-scout/model-scout");
-    expect(scoutTelemetry?.model).not.toBe("qwen");
+    expect(scoutTelemetry?.model).not.toBe("agent");
     expect(scoutTelemetry?.tokens).toEqual({ input: 1, output: 2, cacheRead: 0, cacheWrite: 0, total: 3 });
+  });
+}, 30_000);
+
+describe("semantic stage identifiers", () => {
+  it("emits and persists semantic stage and actor identifiers for every stage, with no qwen/astra stages", async () => {
+    config.models = structuredClone(roleModels);
+    const state = await run();
+    expect(state.finalStatus).toBe("accepted");
+    expect((state.telemetry ?? []).map((stage) => [stage.stage, stage.actor])).toEqual([
+      ["preflight", "controller"],
+      ["baseline-verify", "tools"],
+      ["intake", "jev"],
+      ["scout", "agent"],
+      ["architect", "agent"],
+      ["plan-gate", "jev"],
+      ["implementer", "agent"],
+      ["worker-gate", "jev"],
+      ["implementer", "agent"],
+      ["worker-gate", "jev"],
+      ["verify", "tools"],
+      ["reviewer", "agent"],
+      ["review-gate", "jev"],
+    ]);
+    // Newly emitted stage names and labels carry no model branding; model
+    // references are asserted separately and are never filtered here.
+    for (const stage of state.telemetry ?? []) {
+      expect(stage.stage.toLowerCase()).not.toMatch(/qwen|astra/);
+      if (stage.label !== undefined) expect(stage.label.toLowerCase()).not.toMatch(/qwen|astra/);
+    }
+    // Jev stages keep the Jev actor and the configured Jev model.
+    expect((state.telemetry ?? []).filter((stage) => stage.actor === "jev").map((stage) => stage.model))
+      .toEqual(["jev-latest", "jev-latest", "jev-latest", "jev-latest", "jev-latest"]);
+    // Agent stages keep the full configured provider/model reference.
+    expect((state.telemetry ?? []).filter((stage) => stage.actor === "agent").map((stage) => stage.model))
+      .toEqual([
+        "prov-scout/model-scout",
+        "prov-architect/model-architect",
+        "prov-implementer/model-implementer",
+        "prov-implementer/model-implementer",
+        "prov-reviewer/model-reviewer",
+      ]);
+    // Initial scout and architecture retain no special label.
+    expect(state.telemetry?.find((stage) => stage.stage === "scout")?.label).toBeUndefined();
+    expect(state.telemetry?.find((stage) => stage.stage === "architect")?.label).toBeUndefined();
+    // The persisted artifacts carry the same semantic identifiers.
+    const ordered = (state.telemetry ?? []).map((stage) => [stage.stage, stage.actor]);
+    expect(json(runDir(state), "telemetry.json").map((stage: any) => [stage.stage, stage.actor])).toEqual(ordered);
+    expect(json(runDir(state), "state.json").telemetry.map((stage: any) => [stage.stage, stage.actor])).toEqual(ordered);
+    // Decision records keep their existing semantic stage names and order.
+    const decisions = readFileSync(join(runDir(state), "decisions.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(decisions.map((decision) => decision.stage)).toEqual([
+      "intake", "plan-gate", "worker-gate", "worker-gate", "review-gate", "final-review-routing",
+    ]);
+  });
+
+  it("persists checkpoint artifacts and state checkpoints with the implementer stage", async () => {
+    config.models = structuredClone(roleModels);
+    let implementationCheckpoint = 0;
+    vi.mocked(agents.runCheckpointableAgent).mockImplementation(async (options) => {
+      runnerCalls.push({ fn: "runCheckpointableAgent", role: options.role, model: options.model });
+      workerCalls += 1;
+      await writeWorker(options);
+      const id = workerId(options.prompt);
+      workerAssignments.push({ kind: "implementation", unitId: id });
+      if (implementationCheckpoint === 0) {
+        implementationCheckpoint += 1;
+        // The first implementation segment (unit a) ends in a checkpoint; the
+        // resumed fresh session is a new runCheckpointableAgent call.
+        return { kind: "checkpoint", checkpoint: makeCheckpointFixture({ unitId: id }), context: { tokens: 70_000, contextWindow: 100_000, percent: 70 }, metrics: runnerMetrics(options.model) };
+      }
+      return { kind: "result", result: options.validate(makeWorkerReportFixture({ unitId: id, changedFiles: [`${id}.txt`] })), metrics: runnerMetrics(options.model) };
+    });
+    const state = await run();
+    expect(state.finalStatus, state.finalReason).toBe("accepted");
+    const checkpoint = json(runDir(state), "checkpoint-implementation-a-1.json");
+    expect(checkpoint).toMatchObject({ stage: "implementer", label: "implementation unit a", index: 1 });
+    expect(state.checkpoints).toHaveLength(1);
+    expect(state.checkpoints?.[0]).toMatchObject({ stage: "implementer", label: "implementation unit a", index: 1 });
+    // The persisted telemetry keeps the semantic stage, the agent actor, and
+    // the configured provider/model reference for both implementer segments
+    // of unit a (original and checkpoint-resumed) and unit b.
+    expect(json(runDir(state), "telemetry.json")
+      .filter((stage: any) => stage.stage === "implementer")
+      .map((stage: any) => [stage.stage, stage.label, stage.actor, stage.model, stage.outcome]))
+      .toEqual([
+        ["implementer", "implementation unit a", "agent", "prov-implementer/model-implementer", "completed"],
+        ["implementer", "implementation unit a · resume 1", "agent", "prov-implementer/model-implementer", "completed"],
+        ["implementer", "implementation unit b", "agent", "prov-implementer/model-implementer", "completed"],
+      ]);
+  });
+
+  it("retains failed repairer work as unknown-retained with the lock in place", async () => {
+    config.models = structuredClone(roleModels);
+    config.verificationCommands = ['node -e "process.exit(require(\'fs\').readFileSync(\'a.txt\',\'utf8\').startsWith(\'good\')?0:1)"'];
+    // Baseline passes: a.txt already carries the "good" prefix.
+    writeFileSync(join(cwd, "a.txt"), "good baseline\n");
+    await git(cwd, "add", "a.txt");
+    await git(cwd, "commit", "-m", "good baseline");
+    writeWorker = async (options) => {
+      if (assignmentKind(options) === "deterministic-repair") throw new Error("injected repairer failure");
+      const id = workerId(options.prompt);
+      writeFileSync(join(options.cwd, `${id}.txt`), `implemented ${id}\n`);
+    };
+    const state = await run();
+    expect(state.finalStatus).toBe("failed");
+    expect(state.finalReason).toContain("injected repairer failure");
+    expect(state.telemetry?.some((stage) => stage.stage === "repairer" && stage.outcome === "failed")).toBe(true);
+    expect(state.sourceDisposition?.disposition).toBe("unknown-retained");
+    expect(existsSync(lockPath())).toBe(true);
+  });
+
+  it("names the Implementer role in a context-checkpoint failure final reason", async () => {
+    config.models = structuredClone(roleModels);
+    vi.mocked(agents.runCheckpointableAgent).mockImplementation(async () => {
+      throw new Error("context checkpoint threshold not met");
+    });
+    const state = await run();
+    expect(state.finalStatus).toBe("human");
+    expect(state.finalReason).toMatch(/^Implementer context checkpoint failed for implementation unit a: /);
+    expect(state.finalReason).not.toMatch(/qwen|astra/i);
+    expect(state.telemetry?.some((stage) => stage.stage === "implementer" && stage.outcome === "failed")).toBe(true);
+    expect(state.sourceDisposition?.disposition).toBe("unknown-retained");
+  });
+
+  it("names the Implementer role in a worker timeout final reason", async () => {
+    config.models = structuredClone(roleModels);
+    vi.mocked(agents.runCheckpointableAgent).mockImplementation(async () => {
+      throw new Error("exceeded max runtime");
+    });
+    const state = await run();
+    expect(state.finalStatus).toBe("human");
+    expect(state.finalReason).toMatch(/^Implementer worker timed out for implementation unit a: /);
+    expect(state.finalReason).not.toMatch(/qwen|astra/i);
+    expect(state.telemetry?.some((stage) => stage.stage === "implementer" && stage.outcome === "failed")).toBe(true);
+    expect(state.sourceDisposition?.disposition).toBe("unknown-retained");
+  });
+
+  it("names the Implementer role in a checkpoint-limit final reason after four checkpoint records", async () => {
+    config.models = structuredClone(roleModels);
+    vi.mocked(agents.runCheckpointableAgent).mockImplementation(async (options) => {
+      runnerCalls.push({ fn: "runCheckpointableAgent", role: options.role, model: options.model });
+      workerCalls += 1;
+      const id = workerId(options.prompt);
+      workerAssignments.push({ kind: "implementation", unitId: id });
+      // Every implementer segment ends in a checkpoint, so the segment loop
+      // exceeds maxCheckpointsPerStage on the fourth segment.
+      return { kind: "checkpoint", checkpoint: makeCheckpointFixture({ unitId: id }), context: { tokens: 70_000, contextWindow: 100_000, percent: 70 }, metrics: runnerMetrics(options.model) };
+    });
+    const state = await run();
+    expect(state.finalStatus).toBe("human");
+    expect(state.finalReason).toBe("Implementer exceeded maxCheckpointsPerStage (3) for implementation unit a.");
+    expect(state.finalReason).not.toMatch(/qwen|astra/i);
+    expect(state.checkpoints).toHaveLength(4);
+    expect(state.checkpoints?.map((checkpoint) => [checkpoint.stage, checkpoint.index])).toEqual([
+      ["implementer", 1], ["implementer", 2], ["implementer", 3], ["implementer", 4],
+    ]);
+    expect(state.sourceDisposition?.disposition).toBe("unchanged");
+  });
+
+  it("names the Repairer role in a context-checkpoint failure final reason", async () => {
+    config.models = structuredClone(roleModels);
+    config.verificationCommands = ['node -e "process.exit(require(\'fs\').readFileSync(\'a.txt\',\'utf8\').startsWith(\'good\')?0:1)"'];
+    // Baseline passes: a.txt already carries the "good" prefix.
+    writeFileSync(join(cwd, "a.txt"), "good baseline\n");
+    await git(cwd, "add", "a.txt");
+    await git(cwd, "commit", "-m", "good baseline");
+    vi.mocked(agents.runCheckpointableAgent).mockImplementation(async (options) => {
+      if (options.role === "implementer") {
+        workerCalls += 1;
+        await writeWorker(options);
+        const id = workerId(options.prompt);
+        workerAssignments.push({ kind: "implementation", unitId: id });
+        return { kind: "result", result: options.validate(makeWorkerReportFixture({ unitId: id, changedFiles: [`${id}.txt`] })), metrics: runnerMetrics(options.model) };
+      }
+      throw new Error("context checkpoint threshold not met");
+    });
+    const state = await run();
+    expect(state.finalStatus).toBe("human");
+    expect(state.finalReason).toMatch(/^Repairer context checkpoint failed for deterministic repair 1: /);
+    expect(state.finalReason).not.toMatch(/qwen|astra/i);
+    expect(state.telemetry?.some((stage) => stage.stage === "repairer" && stage.outcome === "failed")).toBe(true);
+    expect(state.sourceDisposition?.disposition).toBe("unknown-retained");
   });
 }, 30_000);
