@@ -1330,6 +1330,65 @@ describe("/factory-setup", () => {
     });
   });
 
+  it("reports a persistence failure and releases setup state so a retry can persist", async () => {
+    const harness = createHarness();
+    const snapshot = [
+      { provider: "prov-a", model: "model-a" },
+      { provider: "prov-b", model: "model-b" },
+    ];
+    const { ctx, calls } = createCtx();
+    vi.mocked(ctx.modelRegistry.getAvailable).mockReturnValue(CANCEL_REGISTRY);
+    scriptRoleSelections(ctx, calls, CANCEL_SELECTION);
+
+    // One-shot synchronous throw: the handler catches it, surfaces the
+    // failure notification, and releases setup state in its finally block.
+    vi.mocked(persistModelRoles).mockImplementationOnce(() => {
+      throw new Error("injected persistence failure");
+    });
+
+    await harness.commands.get("factory-setup")!.handler("", ctx);
+
+    expect(calls.select).toHaveLength(10);
+    expect(calls.confirm).toHaveLength(1);
+    expect(vi.mocked(persistModelRoles)).toHaveBeenCalledTimes(1);
+    expect(calls.notify).toEqual([
+      { message: "Factory setup failed: injected persistence failure", type: "error" },
+    ]);
+    expect(calls.notify).not.toContainEqual({
+      message:
+        ".pi/software-factory.json updated. The new role assignments apply to the next /factory invocation.",
+      type: "info",
+    });
+
+    // Same harness, same context, no mock resets: the consumed one-shot
+    // failure leaves the mock available for the retry, which persists.
+    vi.mocked(persistModelRoles).mockImplementationOnce(() => CANCEL_SELECTION);
+
+    await harness.commands.get("factory-setup")!.handler("", ctx);
+
+    expect(calls.select).toHaveLength(20);
+    expect(calls.confirm).toHaveLength(2);
+    expect(vi.mocked(persistModelRoles)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(persistModelRoles)).toHaveBeenNthCalledWith(
+      2,
+      ctx.cwd,
+      CANCEL_SELECTION,
+      snapshot,
+    );
+    expect(calls.notify).not.toContainEqual({
+      message: "A /factory-setup flow is already in progress in this Pi session.",
+      type: "warning",
+    });
+    expect(calls.notify).toEqual([
+      { message: "Factory setup failed: injected persistence failure", type: "error" },
+      {
+        message:
+          ".pi/software-factory.json updated. The new role assignments apply to the next /factory invocation.",
+        type: "info",
+      },
+    ]);
+  });
+
   it("blocks setup while a factory run is active", async () => {
     const harness = createHarness();
     let release!: (state: FactoryRunState) => void;
