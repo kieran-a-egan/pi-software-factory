@@ -1410,4 +1410,87 @@ describe("/factory-setup", () => {
       await firstSetup;
     }
   });
+
+  it("does not save when a factory run starts after the final confirmation is reached", async () => {
+    const harness = createHarness();
+    let releaseConfirm!: (confirmed: boolean) => void;
+    const confirmation = new Promise<boolean>((resolve) => {
+      releaseConfirm = resolve;
+    });
+    let signalConfirmation!: () => void;
+    const confirmationReached = new Promise<void>((resolve) => {
+      signalConfirmation = resolve;
+    });
+
+    const { ctx, calls } = createCtx();
+    vi.mocked(ctx.modelRegistry.getAvailable).mockReturnValue(CANCEL_REGISTRY);
+    scriptRoleSelections(ctx, calls, CANCEL_SELECTION);
+    vi.mocked(ctx.ui.confirm).mockImplementation((title: string, message: string) => {
+      calls.confirm.push({ title, message });
+      signalConfirmation();
+      return confirmation;
+    });
+
+    let releaseRun!: (state: FactoryRunState) => void;
+    const runGate = new Promise<FactoryRunState>((resolve) => {
+      releaseRun = resolve;
+    });
+    vi.mocked(runFactory).mockImplementation(async () => runGate);
+
+    const setup = harness.commands.get("factory-setup")!.handler("", ctx);
+    let pendingRun: Promise<void> | undefined;
+    try {
+      // All ten role-selection prompts have completed and setup is parked at
+      // the final confirmation while the run gate is still closed.
+      await confirmationReached;
+      expect(calls.select).toHaveLength(10);
+      expect(calls.confirm).toEqual([
+        {
+          title: "Save Software Factory role models?",
+          message: [
+            "scout: prov-a/model-a · off",
+            "architect: prov-b/model-b · minimal",
+            "implementer: prov-a/model-a · low",
+            "reviewer: prov-b/model-b · high",
+            "repairer: prov-a/model-a · max",
+          ].join("\n"),
+        },
+      ]);
+
+      // The /factory handler flips the shared running flag synchronously,
+      // so the race window is open while the confirmation is still held.
+      pendingRun = harness.run("race run", ctx);
+      expect(vi.mocked(runFactory)).toHaveBeenCalledTimes(1);
+
+      // Releasing the confirmation lets setup pass the decline check and
+      // reach the post-confirmation running recheck.
+      releaseConfirm(true);
+      await setup;
+
+      expect(vi.mocked(persistModelRoles)).not.toHaveBeenCalled();
+      expect(calls.notify).toEqual([
+        {
+          message:
+            "A /factory run started while setup was in progress. Wait for it to finish, then retry /factory-setup.",
+          type: "warning",
+        },
+      ]);
+      expect(calls.notify).not.toContainEqual({
+        message:
+          ".pi/software-factory.json updated. The new role assignments apply to the next /factory invocation.",
+        type: "info",
+      });
+    } finally {
+      releaseConfirm(true); // idempotent: settles any still-held confirmation
+      let setupError: unknown;
+      try {
+        await setup;
+      } catch (error) {
+        setupError = error;
+      }
+      releaseRun(makeFinalState());
+      await pendingRun;
+      if (setupError !== undefined) throw setupError;
+    }
+  });
 });
