@@ -98,6 +98,18 @@ const decisionsOf = (state: FactoryRunState, stage: string) =>
   readFileSync(join(runDir(state), "decisions.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line))
     .filter((decision) => decision.stage === stage);
 
+/**
+ * Restores the original a.txt/b.txt filesExpected scopes on the fresh fixture's
+ * a/b units only. Opt-in for tests whose behavior is gated on scopes: parallel
+ * batch selection, sequential scope snapshots, and unit-scoped scout evidence.
+ */
+const restoreDefaultUnitScopes = () => {
+  for (const id of ["a", "b"]) {
+    const unit = architecture.implementationUnits.find((candidate) => candidate.id === id);
+    if (unit) unit.filesExpected = [`${id}.txt`];
+  }
+};
+
 beforeEach(async () => {
   cwd = mkdtempSync(join(tmpdir(), "pi-sf-controller-test-"));
   await git(cwd, "init", "-b", "main");
@@ -114,7 +126,7 @@ beforeEach(async () => {
   config.parallelImplementation.enabled = false;
   architecture = {
     summary: "fixture", approach: "bounded", architecturalDecisions: [], risks: [], assumptions: [], verificationStrategy: [],
-    implementationUnits: ["a", "b"].map((id) => ({ id, objective: id, filesExpected: [`${id}.txt`], acceptance: [], constraints: [], dependsOn: [] })),
+    implementationUnits: ["a", "b"].map((id) => ({ id, objective: id, acceptance: [], constraints: [], dependsOn: [] })),
   };
   review = { summary: "clean", verdict: "clean", findings: [], testGaps: [], requirementCoverage: [] };
   gate = { action: "accept", confidence: 1, residualRisk: "low", reviewSufficientProbability: 0.57, raw: { score: 0.57 } };
@@ -1041,6 +1053,7 @@ describe("controller release reliability", () => {
 
   it("keeps failed/cancelled parallel worktrees; primary source is never partly integrated", async () => {
     config.parallelImplementation.enabled = true;
+    restoreDefaultUnitScopes();
     let peerStarted!: () => void;
     const started = new Promise<void>((resolve) => { peerStarted = resolve; });
     writeWorker = async (options) => {
@@ -1069,6 +1082,7 @@ describe("controller release reliability", () => {
 
   it("preserves integrated parallel-batch evidence if final review requires HUMAN", async () => {
     config.parallelImplementation.enabled = true;
+    restoreDefaultUnitScopes();
     gate.action = "human";
     const state = await run();
     expect(state.finalStatus).toBe("human");
@@ -1096,6 +1110,7 @@ describe("controller release reliability", () => {
     writeFileSync(join(cwd, ".git", "info", "attributes"), ".pi/software-factory/runs/** filter=fail\n");
     await git(cwd, "config", "filter.fail.clean", 'node -e "process.exit(1)"');
     await git(cwd, "config", "filter.fail.required", "true");
+    restoreDefaultUnitScopes();
 
     const state = await run();
 
@@ -1106,6 +1121,7 @@ describe("controller release reliability", () => {
 
   it("retains the whole run when a sequential unit fails after parallel integration", async () => {
     config.parallelImplementation.enabled = true;
+    restoreDefaultUnitScopes();
     architecture.implementationUnits.push({ id: "c", objective: "c", filesExpected: ["c.txt"], acceptance: [], constraints: [], dependsOn: ["a", "b"] });
     writeWorker = async (options) => {
       const id = workerId(options.prompt);
@@ -1188,6 +1204,7 @@ describe("controller release reliability", () => {
       unknowns: ["none"],
       recommendedReads: ["a.txt"],
     });
+    restoreDefaultUnitScopes();
     const state = await run();
     expect(state.finalStatus, state.finalReason).toBe("accepted");
 
@@ -1244,6 +1261,7 @@ describe("controller release reliability", () => {
     vi.mocked(JevDecisionEngine.prototype.gatePlan).mockResolvedValueOnce({
       action: "rescout", confidence: 1, planCompleteProbability: 1, implementationRisk: "low", rescoutFocus: "dependencies", replanFocus: "none", raw: {},
     });
+    restoreDefaultUnitScopes();
     const state = await run();
     expect(state.finalStatus, state.finalReason).toBe("accepted");
     expect(scoutCalls).toBeGreaterThanOrEqual(2);
@@ -1283,6 +1301,7 @@ describe("controller release reliability", () => {
       }
       return { kind: "result", result: options.validate(makeWorkerReportFixture({ unitId: id, changedFiles: [`${id}.txt`] })), metrics: runnerMetrics(options.model) };
     });
+    restoreDefaultUnitScopes();
     const state = await run();
     expect(state.finalStatus, state.finalReason).toBe("accepted");
     // Unit a produced two implementation segments (initial + resumed); unit b one.
@@ -1329,6 +1348,7 @@ describe("controller release reliability", () => {
         ? { disposition: "continue", confidence: 1, raw: {} }
         : { disposition: "ready", confidence: 1, raw: {} };
     });
+    restoreDefaultUnitScopes();
     const state = await run();
     expect(state.finalStatus, state.finalReason).toBe("accepted");
     // Unit a produced two implementation segments (initial + Jev continuation).
@@ -1361,6 +1381,7 @@ describe("controller release reliability", () => {
 
   it("hands off distinct unit-scoped evidence per parallel unit without changing scheduling or worktree behavior", async () => {
     config.parallelImplementation.enabled = true;
+    restoreDefaultUnitScopes();
     scoutFactory = () => ({
       summary: "parallel scout",
       files: [{ path: "a.txt", relevance: "a" }, { path: "b.txt", relevance: "b" }],
@@ -1496,6 +1517,7 @@ describe("controller release reliability", () => {
   it("routes parallel implementer workers to models.implementer", async () => {
     config.models = structuredClone(roleModels);
     config.parallelImplementation.enabled = true;
+    restoreDefaultUnitScopes();
     const state = await run();
     expect(state.finalStatus).toBe("accepted");
     expect(json(runDir(state), "parallel-batch-1.json").outcome).toBe("integrated");
