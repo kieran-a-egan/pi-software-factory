@@ -174,9 +174,11 @@ interface Harness {
   sessionStart: (ctx: any) => Promise<void>;
   render: (data: unknown, expanded?: boolean) => string;
   lastEntry: () => any;
+  setModel: (model: unknown) => Promise<boolean>;
 }
 
 function createHarness(): Harness {
+  const setModel = vi.fn<(model: unknown) => Promise<boolean>>(async () => true);
   const harness: Harness = {
     entries: [],
     commands: new Map(),
@@ -197,6 +199,7 @@ function createHarness(): Harness {
     lastEntry: () => {
       throw new Error("harness not initialized");
     },
+    setModel,
   };
 
   const pi = {
@@ -213,6 +216,7 @@ function createHarness(): Harness {
     appendEntry: (customType: string, data: any) => {
       harness.entries.push({ customType, data });
     },
+    setModel,
   };
 
   softwareFactory(pi as unknown as ExtensionAPI);
@@ -1248,8 +1252,9 @@ describe("/factory-setup", () => {
     ]);
   });
 
-  // Fixtures and scripting shared by the final-confirmation cancellation tests
-  // below; deliberately not hoisted into the other setup tests.
+  // Fixtures and scripting shared by the successful-flow test and the
+  // final-confirmation cancellation tests below; deliberately not hoisted
+  // into the other setup tests.
   const CANCEL_REGISTRY = [
     { provider: "prov-a", id: "model-a" },
     { provider: "prov-b", id: "model-b" },
@@ -1273,6 +1278,45 @@ describe("/factory-setup", () => {
         : ref.thinking;
     });
   }
+
+  it("saves role selections without mutating Pi's active model", async () => {
+    const harness = createHarness();
+    const snapshot = [
+      { provider: "prov-a", model: "model-a" },
+      { provider: "prov-b", model: "model-b" },
+    ];
+    const { ctx, calls } = createCtx();
+    vi.mocked(ctx.modelRegistry.getAvailable).mockReturnValue(CANCEL_REGISTRY);
+    scriptRoleSelections(ctx, calls, CANCEL_SELECTION);
+    vi.mocked(persistModelRoles).mockReturnValue(CANCEL_SELECTION);
+
+    await harness.commands.get("factory-setup")!.handler("", ctx);
+
+    expect(ctx.modelRegistry.getAvailable).toHaveBeenCalledTimes(1);
+    expect(calls.select).toHaveLength(10);
+    expect(calls.confirm).toEqual([
+      {
+        title: "Save Software Factory role models?",
+        message: [
+          "scout: prov-a/model-a · off",
+          "architect: prov-b/model-b · minimal",
+          "implementer: prov-a/model-a · low",
+          "reviewer: prov-b/model-b · high",
+          "repairer: prov-a/model-a · max",
+        ].join("\n"),
+      },
+    ]);
+    expect(vi.mocked(persistModelRoles)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(persistModelRoles)).toHaveBeenCalledWith(ctx.cwd, CANCEL_SELECTION, snapshot);
+    expect(calls.notify).toEqual([
+      {
+        message:
+          ".pi/software-factory.json updated. The new role assignments apply to the next /factory invocation.",
+        type: "info",
+      },
+    ]);
+    expect(harness.setModel).not.toHaveBeenCalled();
+  });
 
   it("does not save when the final confirmation is declined", async () => {
     const harness = createHarness();
