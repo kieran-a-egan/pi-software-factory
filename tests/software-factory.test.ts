@@ -1493,6 +1493,68 @@ describe("/factory-setup", () => {
     ]);
   });
 
+  it("reports a normalization failure and releases setup state so a retry can persist", async () => {
+    const harness = createHarness();
+    const snapshot = [
+      { provider: "prov-a", model: "model-a" },
+      { provider: "prov-b", model: "model-b" },
+    ];
+    const { ctx, calls } = createCtx();
+
+    // The registry returns malformed data (it does not throw): the real
+    // normalizeAvailableModels deterministically rejects null, the handler
+    // catches it, surfaces the failure notification, and releases setup
+    // state in its finally block.
+    vi.mocked(ctx.modelRegistry.getAvailable).mockReturnValue(null);
+
+    await harness.commands.get("factory-setup")!.handler("", ctx);
+
+    expect(ctx.modelRegistry.getAvailable).toHaveBeenCalledTimes(1);
+    expect(ctx.ui.select).not.toHaveBeenCalled();
+    expect(ctx.ui.confirm).not.toHaveBeenCalled();
+    expect(calls.select).toEqual([]);
+    expect(calls.confirm).toEqual([]);
+    expect(vi.mocked(persistModelRoles)).not.toHaveBeenCalled();
+    expect(calls.notify).toEqual([
+      {
+        message:
+          "Factory setup failed: Invalid available models: expected an array of registry entries with provider and id.",
+        type: "error",
+      },
+    ]);
+
+    // Same harness, same context, no mock resets: the retry passes the
+    // in-progress guard, selects, confirms, and persists.
+    vi.mocked(ctx.modelRegistry.getAvailable).mockReturnValue(CANCEL_REGISTRY);
+    scriptRoleSelections(ctx, calls, CANCEL_SELECTION);
+
+    await harness.commands.get("factory-setup")!.handler("", ctx);
+
+    expect(ctx.modelRegistry.getAvailable).toHaveBeenCalledTimes(2);
+    expect(ctx.ui.select).toHaveBeenCalledTimes(10);
+    expect(calls.select).toHaveLength(10);
+    expect(calls.confirm).toHaveLength(1);
+    expect(calls.confirm[0].title).toBe("Save Software Factory role models?");
+    expect(vi.mocked(persistModelRoles)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(persistModelRoles)).toHaveBeenCalledWith(ctx.cwd, CANCEL_SELECTION, snapshot);
+    expect(calls.notify).not.toContainEqual({
+      message: "A /factory-setup flow is already in progress in this Pi session.",
+      type: "warning",
+    });
+    expect(calls.notify).toEqual([
+      {
+        message:
+          "Factory setup failed: Invalid available models: expected an array of registry entries with provider and id.",
+        type: "error",
+      },
+      {
+        message:
+          ".pi/software-factory.json updated. The new role assignments apply to the next /factory invocation.",
+        type: "info",
+      },
+    ]);
+  });
+
   it("blocks setup while a factory run is active", async () => {
     const harness = createHarness();
     let release!: (state: FactoryRunState) => void;
