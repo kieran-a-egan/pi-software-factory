@@ -1555,6 +1555,68 @@ describe("/factory-setup", () => {
     ]);
   });
 
+  it("reports a confirmation failure and releases setup state so a retry can persist", async () => {
+    const harness = createHarness();
+    const snapshot = [
+      { provider: "prov-a", model: "model-a" },
+      { provider: "prov-b", model: "model-b" },
+    ];
+    const { ctx, calls } = createCtx();
+    vi.mocked(ctx.modelRegistry.getAvailable).mockReturnValue(CANCEL_REGISTRY);
+    scriptRoleSelections(ctx, calls, CANCEL_SELECTION);
+
+    // One-shot async rejection: the final confirmation throws, the handler
+    // catches it, surfaces the failure notification, and releases setup
+    // state in its finally block.
+    vi.mocked(ctx.ui.confirm).mockRejectedValueOnce(new Error("injected confirmation failure"));
+
+    await harness.commands.get("factory-setup")!.handler("", ctx);
+
+    expect(ctx.ui.select).toHaveBeenCalledTimes(10);
+    expect(calls.select).toHaveLength(10);
+    expect(ctx.ui.confirm).toHaveBeenCalledTimes(1);
+    expect(calls.confirm).toEqual([]);
+    expect(vi.mocked(persistModelRoles)).not.toHaveBeenCalled();
+    expect(calls.notify).toEqual([
+      { message: "Factory setup failed: injected confirmation failure", type: "error" },
+    ]);
+    expect(calls.notify).not.toContainEqual({
+      message:
+        ".pi/software-factory.json updated. The new role assignments apply to the next /factory invocation.",
+      type: "info",
+    });
+
+    // Same harness, same context, no mock resets: the consumed one-shot
+    // rejection leaves the scripted role selections for the retry, which
+    // passes the in-progress guard, confirms, and persists.
+    vi.mocked(ctx.ui.confirm).mockImplementation((title: string, message: string) => {
+      calls.confirm.push({ title, message });
+      return Promise.resolve(true);
+    });
+
+    await harness.commands.get("factory-setup")!.handler("", ctx);
+
+    expect(ctx.ui.select).toHaveBeenCalledTimes(20);
+    expect(calls.select).toHaveLength(20);
+    expect(ctx.ui.confirm).toHaveBeenCalledTimes(2);
+    expect(calls.confirm).toHaveLength(1);
+    expect(calls.confirm[0].title).toBe("Save Software Factory role models?");
+    expect(vi.mocked(persistModelRoles)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(persistModelRoles)).toHaveBeenCalledWith(ctx.cwd, CANCEL_SELECTION, snapshot);
+    expect(calls.notify).not.toContainEqual({
+      message: "A /factory-setup flow is already in progress in this Pi session.",
+      type: "warning",
+    });
+    expect(calls.notify).toEqual([
+      { message: "Factory setup failed: injected confirmation failure", type: "error" },
+      {
+        message:
+          ".pi/software-factory.json updated. The new role assignments apply to the next /factory invocation.",
+        type: "info",
+      },
+    ]);
+  });
+
   it("blocks setup while a factory run is active", async () => {
     const harness = createHarness();
     let release!: (state: FactoryRunState) => void;
