@@ -1529,4 +1529,275 @@ describe("controller repair budgets (fast, in-memory boundaries)", () => {
       { accepted: false, verifiedDiff: "", writerQuiescenceUncertain: false, ignoredPrefixes: [".pi/software-factory/runs"], retainedWorktrees: [] },
     ]);
   });
+
+  it("accepts after one deterministic repair restores verification and two later review repairs, with both classes' pass-1 evidence coexisting", async () => {
+    // Ordered verification outcomes: baseline pass, post-implementation fail
+    // (drives the deterministic repair), and passing re-verifications after
+    // the deterministic repair and each review repair. The call count pins
+    // the exact verification stages.
+    verificationSequence = [
+      passingVerification(), failingVerification(),
+      passingVerification(), passingVerification(), passingVerification(),
+    ];
+    const requested: ReviewResult = {
+      summary: "changes requested",
+      verdict: "changes_requested",
+      findings: [{ severity: "minor", title: "Inconsistent naming", explanation: "b.txt content is inconsistent with the objective.", file: "b.txt" }],
+      testGaps: [], requirementCoverage: [],
+    };
+    const cleanReview: ReviewResult = { summary: "clean", verdict: "clean", findings: [], testGaps: [], requirementCoverage: [] };
+    reviewSequence = [requested, requested, cleanReview];
+    gate.reviewSufficientProbability = 0.65; // normal acceptance, not the low-sufficiency bound
+    vi.mocked(JevDecisionEngine.prototype.gateReview)
+      .mockResolvedValueOnce({ ...gate, action: "rework" })
+      .mockResolvedValueOnce({ ...gate, action: "rework" })
+      .mockResolvedValueOnce({ ...gate, action: "accept" });
+
+    const state = await run();
+
+    // Baseline passed, post-implementation verification failed, and the
+    // single deterministic repair restored passing verification before the
+    // initial review.
+    expect(state.baselineVerification?.passed).toBe(true);
+    expect((fakeStore?.written.get("verification.json") as VerificationResult | undefined)?.passed).toBe(false);
+    expect((fakeStore?.written.get("verification-after-deterministic-repair-1.json") as VerificationResult | undefined)?.passed).toBe(true);
+    // Baseline, post-implementation, and one re-verification per repair
+    // pass. The call count pins the exact verification stages.
+    expect(verifyCalls).toHaveLength(5);
+    // Dedicated counts 1 and 2, total 3, and acceptance.
+    expect(state.deterministicRepairPasses).toBe(1);
+    expect(state.reviewRepairPasses).toBe(2);
+    expect(state.repairPasses).toBe(3);
+    expect(state.finalStatus).toBe("accepted");
+    expect(state.reviewRouting?.outcome).toBe("normal-acceptance");
+    // Exactly one deterministic and two review repair assignments after the
+    // two implementation workers, in execution order.
+    expect(workerAssignments()).toEqual([
+      { role: "implementer", unitId: "a" },
+      { role: "implementer", unitId: "b" },
+      { role: "repairer", unitId: "verification-repair-1" },
+      { role: "repairer", unitId: "review-repair-1" },
+      { role: "repairer", unitId: "review-repair-2" },
+    ]);
+    expect(runnerCalls.filter((call) => call.fn === "runCheckpointableAgent")).toHaveLength(5);
+    // The remaining two review repairs stayed available after deterministic
+    // repair; both re-verified passing.
+    expect((fakeStore?.written.get("verification-after-review-repair-1.json") as VerificationResult | undefined)?.passed).toBe(true);
+    expect((fakeStore?.written.get("verification-after-review-repair-2.json") as VerificationResult | undefined)?.passed).toBe(true);
+    // Both classes' pass-1 worker, gate, and verification artifacts coexist
+    // in the run store's written map.
+    for (const stem of [
+      "deterministic-repair-1",
+      "deterministic-repair-gate-1",
+      "verification-after-deterministic-repair-1",
+      "review-repair-1",
+      "review-repair-gate-1",
+      "verification-after-review-repair-1",
+    ]) {
+      expect(fakeStore?.written.has(`${stem}.json`)).toBe(true);
+    }
+    // Content: the worker reports carry the fixture unit ids' changedFiles,
+    // and both worker gates are ready.
+    expect(fakeStore?.written.get("deterministic-repair-1.json")).toMatchObject({ summary: expect.any(String), changedFiles: ["verification-repair-1.txt"] });
+    expect(fakeStore?.written.get("deterministic-repair-gate-1.json")).toMatchObject({ disposition: "ready" });
+    expect(fakeStore?.written.get("review-repair-1.json")).toMatchObject({ changedFiles: ["review-repair-1.txt"] });
+    expect(fakeStore?.written.get("review-repair-gate-1.json")).toMatchObject({ disposition: "ready" });
+    // Decision history identifies class and pass for both repair classes and
+    // preserves the final routing evidence.
+    const deterministicWorkerGates = decisionsOf("worker-gate").filter((decision) => decision.repairClass === "deterministic");
+    expect(deterministicWorkerGates.map((decision) => decision.repairPass)).toEqual([1]);
+    expect((deterministicWorkerGates[0].decision as { disposition?: string }).disposition).toBe("ready");
+    const reviewWorkerGates = decisionsOf("worker-gate").filter((decision) => decision.repairClass === "review");
+    expect(reviewWorkerGates.map((decision) => decision.repairPass)).toEqual([1, 2]);
+    const reviewGates = decisionsOf("review-gate").filter((decision) => decision.repairClass === "review");
+    expect(reviewGates.map((decision) => [decision.repairPass, (decision.decision as { action?: string }).action]))
+      .toEqual([[1, "rework"], [2, "accept"]]);
+    const routing = decisionsOf("final-review-routing");
+    expect(routing).toHaveLength(1);
+    expect((routing[0].routing as { outcome?: string }).outcome).toBe("normal-acceptance");
+    // The persisted counters and the aggregate agree with the returned
+    // state.
+    expect(persistedRunFacts("state.json")).toMatchObject({ deterministicRepairPasses: 1, reviewRepairPasses: 2, repairPasses: 3 });
+    expect(persistedRunFacts("run-summary.json")).toMatchObject({ deterministicRepairPasses: 1, reviewRepairPasses: 2, repairPasses: 3 });
+  });
+
+  it("keeps repairPasses equal to the dedicated counters in returned state, persisted state, run summary, and every intermediate state write", async () => {
+    // Ordered verification outcomes: baseline pass, post-implementation fail
+    // (drives the deterministic repair), and passing re-verifications after
+    // the deterministic repair and each review repair. The call count pins
+    // the exact verification stages.
+    verificationSequence = [
+      passingVerification(), failingVerification(),
+      passingVerification(), passingVerification(), passingVerification(),
+    ];
+    const requested: ReviewResult = {
+      summary: "changes requested",
+      verdict: "changes_requested",
+      findings: [{ severity: "minor", title: "Inconsistent naming", explanation: "b.txt content is inconsistent with the objective.", file: "b.txt" }],
+      testGaps: [], requirementCoverage: [],
+    };
+    reviewSequence = [requested, requested, review];
+    vi.mocked(JevDecisionEngine.prototype.gateReview)
+      .mockResolvedValueOnce({ ...gate, action: "rework" })
+      .mockResolvedValueOnce({ ...gate, action: "rework" })
+      .mockResolvedValueOnce(gate);
+
+    // One deterministic repair followed by two review repairs. The progress
+    // callback reads the latest persisted state.json synchronously after
+    // each completed repairer stage; the controller persists
+    // telemetry/state before emitting the "completed" progress event.
+    const intermediate: Array<{ deterministicRepairPasses: unknown; reviewRepairPasses: unknown; repairPasses: unknown }> = [];
+    const progress = (event: FactoryProgressEvent) => {
+      if (event.type !== "completed" || event.telemetry.stage !== "repairer") return;
+      // The controller persists state.json before emitting the completed
+      // repairer progress event. Capture the serialized counter fields
+      // directly, with no zero fallbacks: a missing artifact, or a missing
+      // or null field in it, must fail the exact snapshot assertion below.
+      const persisted = fakeStore?.written.get("state.json") as Record<string, unknown> | undefined;
+      expect(persisted, "state.json must be persisted before the completed repairer progress event").toBeDefined();
+      intermediate.push({
+        deterministicRepairPasses: persisted!.deterministicRepairPasses,
+        reviewRepairPasses: persisted!.reviewRepairPasses,
+        repairPasses: persisted!.repairPasses,
+      });
+    };
+
+    const state = await run(progress);
+    // Baseline, post-implementation, and one re-verification per repair
+    // pass. The call count pins the exact verification stages.
+    expect(verifyCalls).toHaveLength(5);
+
+    // The aggregate never diverges from the dedicated counters, including in
+    // the persisted intermediate states written after each repair pass.
+    expect(intermediate).toEqual([
+      { deterministicRepairPasses: 1, reviewRepairPasses: 0, repairPasses: 1 },
+      { deterministicRepairPasses: 1, reviewRepairPasses: 1, repairPasses: 2 },
+      { deterministicRepairPasses: 1, reviewRepairPasses: 2, repairPasses: 3 },
+    ]);
+    expect(state.deterministicRepairPasses).toBe(1);
+    expect(state.reviewRepairPasses).toBe(2);
+    expect(state.repairPasses).toBe(state.deterministicRepairPasses + state.reviewRepairPasses);
+    expect(state.repairPasses).toBe(3);
+    expect(state.finalStatus).toBe("accepted");
+    expect(persistedRunFacts("state.json")).toMatchObject({ deterministicRepairPasses: 1, reviewRepairPasses: 2, repairPasses: 3 });
+    expect(persistedRunFacts("run-summary.json")).toMatchObject({ deterministicRepairPasses: 1, reviewRepairPasses: 2, repairPasses: 3 });
+  });
+
+  it("counts the deterministic repair pass when its worker gate stops the repair early (blocked)", async () => {
+    // Ordered verification outcomes: baseline pass, post-implementation fail
+    // (drives the deterministic repair). The call count pins the exact
+    // verification stages: the early stop means no re-verification happens.
+    verificationSequence = [passingVerification(), failingVerification()];
+    // The two implementation worker gates stay ready; the deterministic
+    // repair worker gate blocks the pass.
+    vi.mocked(JevDecisionEngine.prototype.gateWorker)
+      .mockResolvedValueOnce({ disposition: "ready", confidence: 1, raw: {} })
+      .mockResolvedValueOnce({ disposition: "ready", confidence: 1, raw: {} })
+      .mockResolvedValueOnce({ disposition: "blocked", confidence: 1, raw: {} });
+
+    const state = await run();
+
+    // The pass was counted before the gate blocked it: human stop with a
+    // reason naming the pass.
+    expect(state.finalStatus).toBe("human");
+    expect(state.finalReason).toContain("deterministic repair 1");
+    expect(state.deterministicRepairPasses).toBe(1);
+    expect(state.reviewRepairPasses).toBe(0);
+    expect(state.repairPasses).toBe(1);
+    // Exactly two implementation assignments plus the one deterministic
+    // repair assignment; no review repair is attempted.
+    expect(workerAssignments()).toEqual([
+      { role: "implementer", unitId: "a" },
+      { role: "implementer", unitId: "b" },
+      { role: "repairer", unitId: "verification-repair-1" },
+    ]);
+    expect(workerAssignments().filter((assignment) => assignment.unitId.startsWith("review-repair-"))).toHaveLength(0);
+    expect(runnerCalls.filter((call) => call.fn === "runCheckpointableAgent")).toHaveLength(3);
+    // Baseline and post-implementation verification only; no re-verification
+    // call after the blocked gate.
+    expect(verifyCalls).toHaveLength(2);
+    // The assignment's worker report and blocking gate are persisted...
+    expect(fakeStore?.written.get("deterministic-repair-1.json")).toMatchObject({ summary: expect.any(String) });
+    expect(fakeStore?.written.get("deterministic-repair-gate-1.json")).toMatchObject({ disposition: "blocked" });
+    // ...but no re-verification artifact exists in the run store's written
+    // map.
+    expect(fakeStore?.written.has("verification-after-deterministic-repair-1.json")).toBe(false);
+    // The worker-gate decision names the deterministic class and pass.
+    const deterministicWorkerGates = decisionsOf("worker-gate").filter((decision) => decision.repairClass === "deterministic");
+    expect(deterministicWorkerGates.map((decision) => decision.repairPass)).toEqual([1]);
+    expect((deterministicWorkerGates[0].decision as { disposition?: string }).disposition).toBe("blocked");
+    // No later review or final-review routing is reached: no review, review
+    // gate, or routing artifacts and no final-review-routing decision.
+    expect(fakeStore?.written.has("review.json")).toBe(false);
+    expect(fakeStore?.written.has("review-gate.json")).toBe(false);
+    expect(fakeStore?.written.has("review-routing.json")).toBe(false);
+    expect(decisionsOf("final-review-routing")).toHaveLength(0);
+    // The persisted counters and human status agree with the returned state.
+    const persistedState = fakeStore?.written.get("state.json") as
+      | { deterministicRepairPasses?: number; reviewRepairPasses?: number; repairPasses?: number; finalStatus?: string }
+      | undefined;
+    expect(persistedState).toMatchObject({ deterministicRepairPasses: 1, reviewRepairPasses: 0, repairPasses: 1, finalStatus: "human" });
+    expect(persistedRunFacts("run-summary.json")).toMatchObject({ deterministicRepairPasses: 1, reviewRepairPasses: 0, repairPasses: 1 });
+  });
+
+  it("counts the deterministic repair pass when its worker throws after the pass has started", async () => {
+    // Ordered verification outcomes: baseline pass, post-implementation fail
+    // (drives the deterministic repair). The call count pins the exact
+    // verification stages: the early stop means no re-verification happens.
+    verificationSequence = [passingVerification(), failingVerification()];
+    // The repairer worker throws after its pass has been counted; the
+    // implementer workers keep returning the established validated fixture
+    // reports and metrics.
+    vi.mocked(agents.runCheckpointableAgent).mockImplementation(async (options) => {
+      runnerCalls.push({ fn: "runCheckpointableAgent", role: options.role, model: options.model });
+      if (options.role === "repairer") {
+        throw new Error("injected deterministic repair failure");
+      }
+      const id = workerId(options.prompt);
+      return {
+        kind: "result",
+        result: options.validate(makeWorkerReportFixture({ unitId: id, changedFiles: [`${id}.txt`] })),
+        metrics: runnerMetrics(options.model),
+      };
+    });
+
+    const state = await run();
+
+    // The pass was already counted at assignment start even though the
+    // worker threw before submitting a report: failed stop with the injected
+    // reason.
+    expect(state.finalStatus).toBe("failed");
+    expect(state.finalReason).toContain("injected deterministic repair failure");
+    expect(state.deterministicRepairPasses).toBe(1);
+    expect(state.reviewRepairPasses).toBe(0);
+    expect(state.repairPasses).toBe(1);
+    // Exactly two implementation assignments plus the one deterministic
+    // repair assignment; no review repair is attempted.
+    expect(workerAssignments()).toEqual([
+      { role: "implementer", unitId: "a" },
+      { role: "implementer", unitId: "b" },
+      { role: "repairer", unitId: "verification-repair-1" },
+    ]);
+    expect(workerAssignments().filter((assignment) => assignment.unitId.startsWith("review-repair-"))).toHaveLength(0);
+    expect(runnerCalls.filter((call) => call.fn === "runCheckpointableAgent")).toHaveLength(3);
+    // Baseline and post-implementation verification only; no re-verification
+    // call after the worker threw.
+    expect(verifyCalls).toHaveLength(2);
+    // No deterministic repair worker, gate, or verification artifact exists
+    // in the run store's written map: the throw happened before the report
+    // and gate were persisted.
+    expect(fakeStore?.written.has("deterministic-repair-1.json")).toBe(false);
+    expect(fakeStore?.written.has("deterministic-repair-gate-1.json")).toBe(false);
+    expect(fakeStore?.written.has("verification-after-deterministic-repair-1.json")).toBe(false);
+    // The persisted counters and failed status agree with the returned
+    // state.
+    const persistedState = fakeStore?.written.get("state.json") as
+      | { deterministicRepairPasses?: number; reviewRepairPasses?: number; repairPasses?: number; finalStatus?: string }
+      | undefined;
+    expect(persistedState).toMatchObject({ deterministicRepairPasses: 1, reviewRepairPasses: 0, repairPasses: 1, finalStatus: "failed" });
+    const runSummary = fakeStore?.written.get("run-summary.json") as
+      | { deterministicRepairPasses?: number; reviewRepairPasses?: number; repairPasses?: number; finalStatus?: string }
+      | undefined;
+    expect(runSummary).toMatchObject({ deterministicRepairPasses: 1, reviewRepairPasses: 0, repairPasses: 1, finalStatus: "failed" });
+  });
 });
