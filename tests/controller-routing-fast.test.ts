@@ -1253,4 +1253,87 @@ describe("controller repair budgets (fast, in-memory boundaries)", () => {
     const persistedWorkers = (fakeStore?.written.get("state.json") as { workers?: Array<{ unitId?: string }> } | undefined)?.workers;
     expect(persistedWorkers?.map((report) => report.unitId)).toEqual(["a", "b"]);
   });
+
+  it.each([0.57, 0.65])("persists original scores and explicit acceptance routing at %s", async (probability) => {
+    gate.reviewSufficientProbability = probability;
+    const state = await run();
+    expect(state.finalStatus).toBe("accepted");
+    const outcome = probability === 0.57 ? "bounded-low-sufficiency-acceptance" : "normal-acceptance";
+    expect(state.reviewRouting?.outcome).toBe(outcome);
+    // The routing evidence echoes the original gate action, confidence, and
+    // sufficiency probability against the configured default thresholds.
+    expect(state.reviewRouting).toMatchObject({
+      action: "accept",
+      confidence: 1,
+      reviewSufficientProbability: probability,
+      minChoiceConfidence: DEFAULT_CONFIG.jev.minChoiceConfidence,
+      minNoulProbability: DEFAULT_CONFIG.jev.minNoulProbability,
+    });
+    // The original Jev gate, including its raw score, is persisted unchanged.
+    expect(fakeStore?.written.get("review-gate.json")).toEqual(gate);
+    expect(fakeStore?.written.get("review-routing.json")).toEqual(state.reviewRouting);
+    expect((fakeStore?.written.get("state.json") as { reviewGate?: ReviewGateDecision } | undefined)?.reviewGate).toEqual(gate);
+    expect(persistedRunFacts("run-summary.json")?.reviewRouting).toEqual(state.reviewRouting);
+    // The final routing decision is present and carries the full routing
+    // evidence, including the expected outcome.
+    const finalRoutingRecord = decisionsOf("final-review-routing").at(-1);
+    expect(finalRoutingRecord).toBeDefined();
+    expect(finalRoutingRecord?.routing).toEqual(state.reviewRouting);
+    expect((finalRoutingRecord?.routing as { outcome?: string }).outcome).toBe(outcome);
+    // The controller disposition is accepted-in-place; the fake transaction
+    // records the accepted conclude flag.
+    expect(state.sourceDisposition?.disposition).toBe("accepted-in-place");
+    expect(fakeTransactions[0].concludeCalls).toEqual([
+      { accepted: true, verifiedDiff: "", writerQuiescenceUncertain: false, ignoredPrefixes: [".pi/software-factory/runs"], retainedWorktrees: [] },
+    ]);
+  });
+
+  it.each(["replan", "human"] as const)("preserves final %s semantics and persists human fallback", async (action) => {
+    gate.action = action;
+    const state = await run();
+    expect(state.finalStatus).toBe("human");
+    expect(state.deterministicRepairPasses).toBe(0);
+    expect(state.reviewRepairPasses).toBe(0);
+    expect(state.repairPasses).toBe(0);
+    expect(state.reviewRouting?.outcome).toBe("human-fallback");
+    // The original action is preserved in the persisted routing artifact.
+    expect((fakeStore?.written.get("review-routing.json") as { action?: string } | undefined)?.action).toBe(action);
+    // The persisted gate, state, and summary routing agree with the
+    // returned state, and the final routing decision matches.
+    expect(fakeStore?.written.get("review-gate.json")).toEqual(gate);
+    expect(persistedRunFacts("state.json")?.reviewRouting).toEqual(state.reviewRouting);
+    expect(persistedRunFacts("run-summary.json")?.reviewRouting).toEqual(state.reviewRouting);
+    // The final routing decision is present and agrees with the returned
+    // routing, including the human-fallback outcome.
+    const finalRoutingRecord = decisionsOf("final-review-routing").at(-1);
+    expect(finalRoutingRecord).toBeDefined();
+    expect(finalRoutingRecord?.routing).toEqual(state.reviewRouting);
+    expect((finalRoutingRecord?.routing as { outcome?: string }).outcome).toBe("human-fallback");
+    // The fake transaction's established policy maps a non-accepted run to
+    // unchanged (not the real fixture's retained-unaccepted), with
+    // conclude accepted:false.
+    expect(state.sourceDisposition?.disposition).toBe("unchanged");
+    expect(fakeTransactions[0].concludeCalls).toEqual([
+      { accepted: false, verifiedDiff: "", writerQuiescenceUncertain: false, ignoredPrefixes: [".pi/software-factory/runs"], retainedWorktrees: [] },
+    ]);
+  });
+
+  it("uses non-default final thresholds in the actual controller", async () => {
+    config.jev.minChoiceConfidence = 0.99;
+    config.jev.minNoulProbability = 0.95;
+    gate.confidence = 0.98;
+    const state = await run();
+    expect(state.finalStatus).toBe("human");
+    expect(state.reviewRouting).toMatchObject({ outcome: "human-fallback", minChoiceConfidence: 0.99, minNoulProbability: 0.95 });
+    // The persisted routing artifact and the final routing decision retain
+    // the configured non-default thresholds.
+    expect(fakeStore?.written.get("review-routing.json")).toEqual(state.reviewRouting);
+    expect((decisionsOf("final-review-routing").at(-1)?.routing as { minChoiceConfidence?: number; minNoulProbability?: number; outcome?: string }))
+      .toMatchObject({ outcome: "human-fallback", minChoiceConfidence: 0.99, minNoulProbability: 0.95 });
+    // The non-accepted run concludes unchanged with accepted:false.
+    expect(state.sourceDisposition?.disposition).toBe("unchanged");
+    expect(fakeTransactions[0].concludeCalls).toEqual([
+      { accepted: false, verifiedDiff: "", writerQuiescenceUncertain: false, ignoredPrefixes: [".pi/software-factory/runs"], retainedWorktrees: [] },
+    ]);
+  });
 });

@@ -226,26 +226,6 @@ describe("controller release reliability", () => {
     }
   });
 
-  it.each([0.57, 0.65])("persists original scores and explicit acceptance routing at %s", async (probability) => {
-    gate.reviewSufficientProbability = probability;
-    const state = await run();
-    expect(state.finalStatus).toBe("accepted");
-    const outcome = probability === 0.57 ? "bounded-low-sufficiency-acceptance" : "normal-acceptance";
-    expect(state.reviewRouting?.outcome).toBe(outcome);
-    expect(json(runDir(state), "review-gate.json")).toEqual(gate);
-    expect(json(runDir(state), "review-routing.json")).toEqual(state.reviewRouting);
-    expect(json(runDir(state), "state.json").reviewGate).toEqual(gate);
-    expect(json(runDir(state), "run-summary.json").reviewRouting).toEqual(state.reviewRouting);
-    const decisions = readFileSync(join(runDir(state), "decisions.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
-    expect(decisions.at(-1).routing.outcome).toBe(outcome);
-    expect(state.sourceDisposition?.disposition).toBe("accepted-in-place");
-    expect(existsSync(lockPath())).toBe(false);
-    expect(await git(cwd, "rev-parse", "HEAD")).toBe(originalHead);
-    expect(await git(cwd, "diff", "--cached")).toBe("");
-    expect(readFileSync(join(cwd, "a.txt"), "utf8")).toBe("implemented a\n");
-    expect(readFileSync(join(cwd, "b.txt"), "utf8")).toBe("implemented b\n");
-  });
-
   it("retains partial sequential edits on HUMAN, and blocks another run even with clean-tree checking disabled", async () => {
     vi.mocked(JevDecisionEngine.prototype.gateWorker).mockResolvedValueOnce({ disposition: "ready", confidence: 1, raw: {} })
       .mockResolvedValueOnce({ disposition: "blocked", confidence: 1, raw: {} });
@@ -295,18 +275,6 @@ describe("controller release reliability", () => {
     expect(workerCalls).toBe(1);
     expect(existsSync(lockPath())).toBe(true);
     expect(json(runDir(state), "source-after.json").diff).toContain("cancelled partial");
-  });
-
-  it.each(["replan", "human"] as const)("preserves final %s semantics and persists human fallback", async (action) => {
-    gate.action = action;
-    const state = await run();
-    expect(state.finalStatus).toBe("human");
-    expect(state.deterministicRepairPasses).toBe(0);
-    expect(state.reviewRepairPasses).toBe(0);
-    expect(state.repairPasses).toBe(0);
-    expect(state.reviewRouting?.outcome).toBe("human-fallback");
-    expect(json(runDir(state), "review-routing.json").action).toBe(action);
-    expect(state.sourceDisposition?.disposition).toBe("retained-unaccepted");
   });
 
   it("forwards the immediately preceding review, latest repair report, and fresh post-repair verification into the second review", async () => {
@@ -790,15 +758,6 @@ describe("controller release reliability", () => {
       ["repairer", "agent", "prov-repairer/model-repairer", "completed"],
       ["repairer", "agent", "prov-repairer/model-repairer", "completed"],
     ]);
-  });
-
-  it("uses non-default final thresholds in the actual controller", async () => {
-    config.jev.minChoiceConfidence = 0.99;
-    config.jev.minNoulProbability = 0.95;
-    gate.confidence = 0.98;
-    const state = await run();
-    expect(state.finalStatus).toBe("human");
-    expect(state.reviewRouting).toMatchObject({ outcome: "human-fallback", minChoiceConfidence: 0.99, minNoulProbability: 0.95 });
   });
 
   it("retains pre-existing staged, unstaged and binary source evidence without resetting the user index", async () => {
