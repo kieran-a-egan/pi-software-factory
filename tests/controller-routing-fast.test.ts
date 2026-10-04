@@ -15,6 +15,7 @@ import * as verification from "../src/verification.js";
 import type {
   ArchitectureResult,
   FactoryConfig,
+  FactoryDecisionRecord,
   FactoryProgressEvent,
   ModelRef,
   ReviewGateDecision,
@@ -895,5 +896,361 @@ describe("controller role routing (fast, in-memory boundaries)", () => {
     expect(state.telemetry?.some((stage) => stage.stage === "repairer" && stage.outcome === "failed")).toBe(true);
     expect(state.sourceDisposition?.disposition).toBe("unknown-retained");
     expect(verifyCalls).toHaveLength(2);
+  });
+});
+
+describe("controller repair budgets (fast, in-memory boundaries)", () => {
+  /**
+   * Ordered role/unitId evidence derived from the existing worker spy: the
+   * implementer prompts carry currentUnit ids, and the repair prompts carry
+   * top-level unitIds (verification-repair-N / review-repair-N). The spy's
+   * implementation and the runnerCalls entries remain unchanged.
+   */
+  const workerAssignments = () =>
+    vi.mocked(agents.runCheckpointableAgent).mock.calls.map((call) => ({
+      role: call[0].role,
+      unitId: workerId(call[0].prompt),
+    }));
+
+  /** Typed stage filter over the fake store's recorded decision records. */
+  const decisionsOf = (stage: string) =>
+    (fakeStore?.decisions ?? [])
+      .filter((decision) => (decision as { stage?: string }).stage === stage)
+      .map((decision) => decision as FactoryDecisionRecord);
+
+  /** Typed view of the persisted repair counters and routing in a written artifact. */
+  const persistedRunFacts = (name: string) =>
+    fakeStore?.written.get(name) as
+      | {
+          deterministicRepairPasses?: number;
+          reviewRepairPasses?: number;
+          repairPasses?: number;
+          reviewRouting?: { outcome?: string };
+        }
+      | undefined;
+
+  it("persists one review repair with re-verification and final routing under the independent review budget", async () => {
+    vi.mocked(JevDecisionEngine.prototype.gateReview).mockResolvedValueOnce({ ...gate, action: "rework" });
+    const state = await run();
+    expect(state.finalStatus).toBe("accepted");
+    expect(state.deterministicRepairPasses).toBe(0);
+    expect(state.reviewRepairPasses).toBe(1);
+    expect(state.repairPasses).toBe(1);
+    // Exactly two implementation assignments plus the one review repair
+    // assignment; the deterministic budget is untouched.
+    expect(workerAssignments()).toEqual([
+      { role: "implementer", unitId: "a" },
+      { role: "implementer", unitId: "b" },
+      { role: "repairer", unitId: "review-repair-1" },
+    ]);
+    expect(runnerCalls.filter((call) => call.fn === "runCheckpointableAgent")).toHaveLength(3);
+    // Baseline, post-implementation, and post-review-repair verification; the
+    // default sequence keeps every outcome passing. The call count pins the
+    // exact verification stages.
+    expect(verifyCalls).toHaveLength(3);
+    const postRepairVerification = fakeStore?.written.get("verification-after-review-repair-1.json") as VerificationResult | undefined;
+    expect(postRepairVerification?.passed).toBe(true);
+    expect(fakeStore?.written.get("review-after-repair-1.json")).toEqual(review);
+    expect(fakeStore?.written.get("review-gate-after-repair-1.json")).toEqual(gate);
+    // The repair worker-gate and review-gate records carry the review class
+    // and pass.
+    expect(decisionsOf("worker-gate").find((decision) => decision.repairClass === "review"))
+      .toMatchObject({ stage: "worker-gate", phase: "repair", repairClass: "review", repairPass: 1 });
+    expect(decisionsOf("review-gate").find((decision) => decision.repairClass === "review"))
+      .toMatchObject({ stage: "review-gate", repairClass: "review", repairPass: 1 });
+    // The default gate sufficiency stays below the normal-acceptance bound.
+    expect(state.reviewRouting?.outcome).toBe("bounded-low-sufficiency-acceptance");
+    // The persisted counters and routing agree with the returned state.
+    const expectedCounters = {
+      deterministicRepairPasses: state.deterministicRepairPasses,
+      reviewRepairPasses: state.reviewRepairPasses,
+      repairPasses: state.repairPasses,
+    };
+    const persistedState = persistedRunFacts("state.json");
+    expect(persistedState).toMatchObject(expectedCounters);
+    expect(persistedState?.reviewRouting).toEqual(state.reviewRouting);
+    const runSummary = persistedRunFacts("run-summary.json");
+    expect(runSummary).toMatchObject(expectedCounters);
+    expect(runSummary?.reviewRouting).toEqual(state.reviewRouting);
+    expect(fakeStore?.written.get("review-routing.json")).toEqual(state.reviewRouting);
+  });
+
+  it("accepts after exactly two review repairs, each with concrete findings and passing re-verification", async () => {
+    gate.reviewSufficientProbability = 0.65; // normal acceptance, not the low-sufficiency bound
+    const firstReview: ReviewResult = {
+      summary: "changes requested",
+      verdict: "changes_requested",
+      findings: [{ severity: "minor", title: "Missing error handling", explanation: "The fixture path does not handle a failed read of a.txt.", file: "a.txt", suggestedFix: "Handle the failure path." }],
+      testGaps: [], requirementCoverage: [],
+    };
+    const secondReview: ReviewResult = {
+      summary: "still changes requested",
+      verdict: "changes_requested",
+      findings: [{ severity: "minor", title: "Unhandled edge case", explanation: "The repaired path still leaves an unhandled edge case in b.txt.", file: "b.txt", suggestedFix: "Cover the edge case." }],
+      testGaps: [], requirementCoverage: [],
+    };
+    const cleanReview: ReviewResult = { summary: "clean after both repairs", verdict: "clean", findings: [], testGaps: [], requirementCoverage: [] };
+    reviewSequence = [firstReview, secondReview, cleanReview];
+    vi.mocked(JevDecisionEngine.prototype.gateReview)
+      .mockResolvedValueOnce({ ...gate, action: "rework" })
+      .mockResolvedValueOnce({ ...gate, action: "rework" })
+      .mockResolvedValueOnce({ ...gate, action: "accept" });
+
+    const state = await run();
+
+    expect(state.finalStatus).toBe("accepted");
+    expect(state.reviewRouting?.outcome).toBe("normal-acceptance");
+    // Exactly two ordered review repair assignments; the deterministic budget
+    // is untouched.
+    expect(workerAssignments()).toEqual([
+      { role: "implementer", unitId: "a" },
+      { role: "implementer", unitId: "b" },
+      { role: "repairer", unitId: "review-repair-1" },
+      { role: "repairer", unitId: "review-repair-2" },
+    ]);
+    expect(state.deterministicRepairPasses).toBe(0);
+    expect(state.reviewRepairPasses).toBe(2);
+    expect(state.repairPasses).toBe(2);
+    expect(runnerCalls.filter((call) => call.fn === "runCheckpointableAgent")).toHaveLength(4);
+    // Baseline, post-implementation, and one re-verification per repair pass.
+    // The call count pins the exact verification stages.
+    expect(verifyCalls).toHaveLength(4);
+    // Passing re-verification after each repair.
+    expect((fakeStore?.written.get("verification-after-review-repair-1.json") as VerificationResult | undefined)?.passed).toBe(true);
+    expect((fakeStore?.written.get("verification-after-review-repair-2.json") as VerificationResult | undefined)?.passed).toBe(true);
+    // Both post-repair review and gate artifacts exist with the expected
+    // content.
+    expect(fakeStore?.written.get("review-after-repair-1.json")).toEqual(secondReview);
+    expect(fakeStore?.written.get("review-after-repair-2.json")).toEqual(cleanReview);
+    expect(fakeStore?.written.get("review-gate-after-repair-1.json")).toMatchObject({ action: "rework" });
+    expect(fakeStore?.written.get("review-gate-after-repair-2.json")).toMatchObject({ action: "accept" });
+    // Decision history identifies class and pass for the review class and
+    // preserves the final routing evidence.
+    const workerGates = decisionsOf("worker-gate").filter((decision) => decision.repairClass === "review");
+    expect(workerGates.map((decision) => decision.repairPass)).toEqual([1, 2]);
+    const reviewGates = decisionsOf("review-gate").filter((decision) => decision.repairClass === "review");
+    expect(reviewGates.map((decision) => [decision.repairPass, (decision.decision as { action?: string }).action]))
+      .toEqual([[1, "rework"], [2, "accept"]]);
+    const routing = decisionsOf("final-review-routing");
+    expect(routing).toHaveLength(1);
+    expect((routing[0].routing as { outcome?: string }).outcome).toBe("normal-acceptance");
+    // The persisted counters and routing agree with the returned state.
+    const expectedCounters = {
+      deterministicRepairPasses: state.deterministicRepairPasses,
+      reviewRepairPasses: state.reviewRepairPasses,
+      repairPasses: state.repairPasses,
+    };
+    const persistedState = persistedRunFacts("state.json");
+    expect(persistedState).toMatchObject(expectedCounters);
+    expect(persistedState?.reviewRouting).toEqual(state.reviewRouting);
+    const runSummary = persistedRunFacts("run-summary.json");
+    expect(runSummary).toMatchObject(expectedCounters);
+    expect(runSummary?.reviewRouting).toEqual(state.reviewRouting);
+    expect(fakeStore?.written.get("review-routing.json")).toEqual(state.reviewRouting);
+  });
+
+  it("stops at the default review repair budget after exactly two review repairs, creates no next-pass artifact, and reaches HUMAN through final-review routing", async () => {
+    // The review gate stays rework for every pass; verification keeps
+    // passing under the default sequence, so only the bounded review budget
+    // can end the loop.
+    gate.action = "rework";
+    const state = await run();
+    expect(state.finalStatus).toBe("human");
+    expect(state.deterministicRepairPasses).toBe(0);
+    expect(state.reviewRepairPasses).toBe(DEFAULT_CONFIG.maxReviewRepairPasses);
+    expect(state.repairPasses).toBe(DEFAULT_CONFIG.maxReviewRepairPasses);
+    // Exactly two review repair assignments; the deterministic budget is
+    // untouched.
+    expect(workerAssignments()).toEqual([
+      { role: "implementer", unitId: "a" },
+      { role: "implementer", unitId: "b" },
+      { role: "repairer", unitId: "review-repair-1" },
+      { role: "repairer", unitId: "review-repair-2" },
+    ]);
+    expect(runnerCalls.filter((call) => call.fn === "runCheckpointableAgent")).toHaveLength(4);
+    // Baseline, post-implementation, and one re-verification per repair
+    // pass. The call count pins the exact verification stages.
+    expect(verifyCalls).toHaveLength(4);
+    expect(state.reviewRouting?.outcome).toBe("human-fallback");
+    // The bounded loop persisted every allowed pass's worker, gate, and
+    // verification artifacts, each with passing verification...
+    for (let pass = 1; pass <= DEFAULT_CONFIG.maxReviewRepairPasses; pass++) {
+      expect(fakeStore?.written.has(`review-repair-${pass}.json`)).toBe(true);
+      expect(fakeStore?.written.has(`review-repair-gate-${pass}.json`)).toBe(true);
+      expect((fakeStore?.written.get(`verification-after-review-repair-${pass}.json`) as VerificationResult | undefined)?.passed).toBe(true);
+    }
+    // ...and no third (next-pass) worker, gate, or verification artifact
+    // exists.
+    expect(fakeStore?.written.has("review-repair-3.json")).toBe(false);
+    expect(fakeStore?.written.has("review-repair-gate-3.json")).toBe(false);
+    expect(fakeStore?.written.has("verification-after-review-repair-3.json")).toBe(false);
+    // The final (still rework) gate is persisted and drives the HUMAN routing.
+    expect(fakeStore?.written.get("review-gate-after-repair-2.json")).toEqual(gate);
+    // The persisted counters and routing agree with the returned state.
+    const expectedCounters = {
+      deterministicRepairPasses: state.deterministicRepairPasses,
+      reviewRepairPasses: state.reviewRepairPasses,
+      repairPasses: state.repairPasses,
+    };
+    const persistedState = persistedRunFacts("state.json");
+    expect(persistedState).toMatchObject(expectedCounters);
+    expect(persistedState?.reviewRouting).toEqual(state.reviewRouting);
+    const runSummary = persistedRunFacts("run-summary.json");
+    expect(runSummary).toMatchObject(expectedCounters);
+    expect(runSummary?.reviewRouting).toEqual(state.reviewRouting);
+  });
+
+  it("honors an explicit non-default review repair budget, creating no next-pass artifact and reaching HUMAN through final-review routing", async () => {
+    config.maxReviewRepairPasses = 3;
+    // The review gate stays rework for every pass; verification keeps
+    // passing under the default sequence, so only the explicit review budget
+    // can end the loop.
+    gate.action = "rework";
+    const state = await run();
+    expect(state.finalStatus).toBe("human");
+    expect(state.deterministicRepairPasses).toBe(0);
+    expect(state.reviewRepairPasses).toBe(3);
+    expect(state.repairPasses).toBe(3);
+    // Exactly three review repair assignments; the deterministic budget is
+    // untouched.
+    expect(workerAssignments()).toEqual([
+      { role: "implementer", unitId: "a" },
+      { role: "implementer", unitId: "b" },
+      { role: "repairer", unitId: "review-repair-1" },
+      { role: "repairer", unitId: "review-repair-2" },
+      { role: "repairer", unitId: "review-repair-3" },
+    ]);
+    expect(runnerCalls.filter((call) => call.fn === "runCheckpointableAgent")).toHaveLength(5);
+    // Baseline, post-implementation, and one re-verification per repair
+    // pass. The call count pins the exact verification stages.
+    expect(verifyCalls).toHaveLength(5);
+    expect(state.reviewRouting?.outcome).toBe("human-fallback");
+    // The bounded loop persisted every allowed pass's worker, gate, and
+    // verification artifacts, each with passing verification...
+    for (let pass = 1; pass <= 3; pass++) {
+      expect(fakeStore?.written.has(`review-repair-${pass}.json`)).toBe(true);
+      expect(fakeStore?.written.has(`review-repair-gate-${pass}.json`)).toBe(true);
+      expect((fakeStore?.written.get(`verification-after-review-repair-${pass}.json`) as VerificationResult | undefined)?.passed).toBe(true);
+    }
+    // ...and the bounded loop stops exactly at the explicit limit: no fourth
+    // pass.
+    expect(fakeStore?.written.has("review-repair-4.json")).toBe(false);
+    expect(fakeStore?.written.has("review-repair-gate-4.json")).toBe(false);
+    expect(fakeStore?.written.has("verification-after-review-repair-4.json")).toBe(false);
+    // The final (still rework) gate is persisted and drives the HUMAN routing.
+    expect(fakeStore?.written.get("review-gate-after-repair-3.json")).toEqual(gate);
+    // The persisted counters and routing agree with the returned state.
+    const expectedCounters = {
+      deterministicRepairPasses: state.deterministicRepairPasses,
+      reviewRepairPasses: state.reviewRepairPasses,
+      repairPasses: state.repairPasses,
+    };
+    const persistedState = persistedRunFacts("state.json");
+    expect(persistedState).toMatchObject(expectedCounters);
+    expect(persistedState?.reviewRouting).toEqual(state.reviewRouting);
+    const runSummary = persistedRunFacts("run-summary.json");
+    expect(runSummary).toMatchObject(expectedCounters);
+    expect(runSummary?.reviewRouting).toEqual(state.reviewRouting);
+    expect(fakeStore?.written.get("review-routing.json")).toEqual(state.reviewRouting);
+  });
+
+  it("runs zero repair assignments when both explicit budgets are zero, and reaches HUMAN through final-review routing", async () => {
+    config.maxDeterministicRepairPasses = 0;
+    config.maxReviewRepairPasses = 0;
+    // Ordered verification outcomes: baseline pass, post-implementation fail
+    // (drives the repair attempts). A confident rework cannot override the
+    // zero budgets, so verification stops after the implementation stage; the
+    // call count pins the exact verification stages.
+    verificationSequence = [passingVerification(), failingVerification()];
+    gate.action = "rework";
+    const state = await run();
+    expect(state.finalStatus).toBe("human");
+    expect(state.deterministicRepairPasses).toBe(0);
+    expect(state.reviewRepairPasses).toBe(0);
+    expect(state.repairPasses).toBe(0);
+    // Implementer assignments only: no repair assignments under the zero
+    // budgets.
+    expect(workerAssignments()).toEqual([
+      { role: "implementer", unitId: "a" },
+      { role: "implementer", unitId: "b" },
+    ]);
+    expect(runnerCalls.filter((call) => call.fn === "runCheckpointableAgent")).toHaveLength(2);
+    // Baseline and post-implementation verification only.
+    expect(verifyCalls).toHaveLength(2);
+    // No repair worker, gate, or verification artifact exists in the run
+    // store's written map.
+    expect(fakeStore?.written.has("deterministic-repair-1.json")).toBe(false);
+    expect(fakeStore?.written.has("review-repair-1.json")).toBe(false);
+    expect(fakeStore?.written.has("verification-after-deterministic-repair-1.json")).toBe(false);
+    expect(fakeStore?.written.has("verification-after-review-repair-1.json")).toBe(false);
+    expect(state.telemetry?.some((stage) => stage.stage === "repairer")).toBe(false);
+    expect(state.reviewRouting?.outcome).toBe("human-fallback");
+    // The persisted counters remain zero.
+    const persistedState = persistedRunFacts("state.json");
+    expect(persistedState).toMatchObject({ deterministicRepairPasses: 0, reviewRepairPasses: 0, repairPasses: 0 });
+    const runSummary = persistedRunFacts("run-summary.json");
+    expect(runSummary).toMatchObject({ deterministicRepairPasses: 0, reviewRepairPasses: 0, repairPasses: 0 });
+  });
+
+  it("honors an explicit deterministic budget greater than one, counting repair assignments separately from implementation workers", async () => {
+    config.maxDeterministicRepairPasses = 2;
+    // Ordered verification outcomes: baseline pass, post-implementation fail
+    // (drives the deterministic repair), repair 1 still fails, repair 2
+    // restores. The call count pins the exact verification stages.
+    verificationSequence = [
+      passingVerification(), failingVerification(), failingVerification(), passingVerification(),
+    ];
+    const state = await run();
+    expect(state.finalStatus).toBe("accepted");
+    expect(state.deterministicRepairPasses).toBe(2);
+    expect(state.reviewRepairPasses).toBe(0);
+    expect(state.repairPasses).toBe(2);
+    // Repair assignments are counted separately from implementation workers,
+    // in execution order; no review repair is attempted.
+    expect(workerAssignments()).toEqual([
+      { role: "implementer", unitId: "a" },
+      { role: "implementer", unitId: "b" },
+      { role: "repairer", unitId: "verification-repair-1" },
+      { role: "repairer", unitId: "verification-repair-2" },
+    ]);
+    expect(runnerCalls.filter((call) => call.fn === "runCheckpointableAgent")).toHaveLength(4);
+    // Baseline, post-implementation, and one re-verification per repair pass.
+    expect(verifyCalls).toHaveLength(4);
+    // Repair 1 leaves the check failing; repair 2 restores it.
+    expect((fakeStore?.written.get("verification-after-deterministic-repair-1.json") as VerificationResult | undefined)?.passed).toBe(false);
+    expect((fakeStore?.written.get("verification-after-deterministic-repair-2.json") as VerificationResult | undefined)?.passed).toBe(true);
+    // Only implementation workers contribute to state.workers; repair reports
+    // are pass-scoped artifacts, not implementation evidence.
+    expect(state.workers?.map((report) => report.unitId)).toEqual(["a", "b"]);
+    expect(state.telemetry?.filter((stage) => stage.stage === "implementer")).toHaveLength(2);
+    expect(state.telemetry?.filter((stage) => stage.stage === "repairer")).toHaveLength(2);
+    // The bounded loop persisted every allowed pass's worker artifact...
+    expect(fakeStore?.written.has("deterministic-repair-1.json")).toBe(true);
+    expect(fakeStore?.written.has("deterministic-repair-2.json")).toBe(true);
+    // ...and no review repair was attempted, while no third (next-pass)
+    // worker, gate, or verification artifact exists.
+    expect(fakeStore?.written.has("review-repair-1.json")).toBe(false);
+    expect(fakeStore?.written.has("deterministic-repair-3.json")).toBe(false);
+    expect(fakeStore?.written.has("deterministic-repair-gate-3.json")).toBe(false);
+    expect(fakeStore?.written.has("verification-after-deterministic-repair-3.json")).toBe(false);
+    // The default gate sufficiency stays below the normal-acceptance bound.
+    expect(state.reviewRouting?.outcome).toBe("bounded-low-sufficiency-acceptance");
+    // The persisted counters and routing agree with the returned state...
+    const expectedCounters = {
+      deterministicRepairPasses: state.deterministicRepairPasses,
+      reviewRepairPasses: state.reviewRepairPasses,
+      repairPasses: state.repairPasses,
+    };
+    const persistedState = persistedRunFacts("state.json");
+    expect(persistedState).toMatchObject(expectedCounters);
+    expect(persistedState?.reviewRouting).toEqual(state.reviewRouting);
+    const runSummary = persistedRunFacts("run-summary.json");
+    expect(runSummary).toMatchObject(expectedCounters);
+    expect(runSummary?.reviewRouting).toEqual(state.reviewRouting);
+    expect(fakeStore?.written.get("review-routing.json")).toEqual(state.reviewRouting);
+    // ...and the persisted workers retain the implementation/repair
+    // separation.
+    const persistedWorkers = (fakeStore?.written.get("state.json") as { workers?: Array<{ unitId?: string }> } | undefined)?.workers;
+    expect(persistedWorkers?.map((report) => report.unitId)).toEqual(["a", "b"]);
   });
 });

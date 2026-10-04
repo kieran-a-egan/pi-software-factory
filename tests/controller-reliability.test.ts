@@ -309,24 +309,6 @@ describe("controller release reliability", () => {
     expect(state.sourceDisposition?.disposition).toBe("retained-unaccepted");
   });
 
-  it("persists one review repair with re-verification and final routing under the independent review budget", async () => {
-    vi.mocked(JevDecisionEngine.prototype.gateReview).mockResolvedValueOnce({ ...gate, action: "rework" });
-    const state = await run();
-    expect(state.finalStatus).toBe("accepted");
-    expect(state.deterministicRepairPasses).toBe(0);
-    expect(state.reviewRepairPasses).toBe(1);
-    expect(state.repairPasses).toBe(1);
-    expect(workerCalls).toBe(3);
-    expect(json(runDir(state), "verification-after-review-repair-1.json").passed).toBe(true);
-    expect(json(runDir(state), "review-after-repair-1.json")).toEqual(review);
-    expect(json(runDir(state), "review-gate-after-repair-1.json")).toEqual(gate);
-    const decisions = readFileSync(join(runDir(state), "decisions.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
-    expect(decisions.find((d) => d.stage === "worker-gate" && d.repairClass === "review"))
-      .toMatchObject({ stage: "worker-gate", phase: "repair", repairClass: "review", repairPass: 1 });
-    expect(decisions.find((d) => d.stage === "review-gate" && d.repairClass === "review"))
-      .toMatchObject({ stage: "review-gate", repairClass: "review", repairPass: 1 });
-  });
-
   it("forwards the immediately preceding review, latest repair report, and fresh post-repair verification into the second review", async () => {
     const firstReview: ReviewResult = {
       summary: "changes requested",
@@ -378,108 +360,6 @@ describe("controller release reliability", () => {
     // initial one, so forwarding a stale verification would fail this assertion.
     expect(inputs[1].verification).not.toEqual(inputs[0].verification);
     expect(inputs[1].verification.diff).not.toBe(inputs[0].verification.diff);
-  });
-
-  it("accepts after exactly two review repairs, each with concrete findings and passing re-verification", async () => {
-    gate.reviewSufficientProbability = 0.65; // normal acceptance, not the low-sufficiency bound
-    const firstReview: ReviewResult = {
-      summary: "changes requested",
-      verdict: "changes_requested",
-      findings: [{ severity: "minor", title: "Missing error handling", explanation: "The fixture path does not handle a failed read of a.txt.", file: "a.txt", suggestedFix: "Handle the failure path." }],
-      testGaps: [], requirementCoverage: [],
-    };
-    const secondReview: ReviewResult = {
-      summary: "still changes requested",
-      verdict: "changes_requested",
-      findings: [{ severity: "minor", title: "Unhandled edge case", explanation: "The repaired path still leaves an unhandled edge case in b.txt.", file: "b.txt", suggestedFix: "Cover the edge case." }],
-      testGaps: [], requirementCoverage: [],
-    };
-    const cleanReview: ReviewResult = { summary: "clean after both repairs", verdict: "clean", findings: [], testGaps: [], requirementCoverage: [] };
-    reviewSequence = [firstReview, secondReview, cleanReview];
-    vi.mocked(JevDecisionEngine.prototype.gateReview)
-      .mockResolvedValueOnce({ ...gate, action: "rework" })
-      .mockResolvedValueOnce({ ...gate, action: "rework" })
-      .mockResolvedValueOnce({ ...gate, action: "accept" });
-
-    const state = await run();
-
-    expect(state.finalStatus).toBe("accepted");
-    expect(state.reviewRouting?.outcome).toBe("normal-acceptance");
-    // Exactly two review repair assignments; the deterministic budget is untouched.
-    expect(assignmentsOf("review-repair")).toBe(2);
-    expect(assignmentsOf("deterministic-repair")).toBe(0);
-    expect(state.reviewRepairPasses).toBe(2);
-    expect(state.deterministicRepairPasses).toBe(0);
-    expect(state.repairPasses).toBe(2);
-    expect(workerCalls).toBe(4);
-    // Passing re-verification after each repair.
-    expect(json(runDir(state), "verification-after-review-repair-1.json").passed).toBe(true);
-    expect(json(runDir(state), "verification-after-review-repair-2.json").passed).toBe(true);
-    // Both post-repair review and gate artifacts exist with the expected content.
-    expect(json(runDir(state), "review-after-repair-1.json")).toEqual(secondReview);
-    expect(json(runDir(state), "review-after-repair-2.json")).toEqual(cleanReview);
-    expect(json(runDir(state), "review-gate-after-repair-1.json")).toMatchObject({ action: "rework" });
-    expect(json(runDir(state), "review-gate-after-repair-2.json")).toMatchObject({ action: "accept" });
-    // Decision history identifies class and pass for the review class and
-    // preserves the final routing evidence.
-    const decisions = decisionsOf(state, "worker-gate").filter((d) => d.repairClass === "review");
-    expect(decisions.map((d) => d.repairPass)).toEqual([1, 2]);
-    const reviewGates = decisionsOf(state, "review-gate").filter((d) => d.repairClass === "review");
-    expect(reviewGates.map((d) => [d.repairPass, d.decision.action])).toEqual([[1, "rework"], [2, "accept"]]);
-    const routing = decisionsOf(state, "final-review-routing");
-    expect(routing).toHaveLength(1);
-    expect(routing[0].routing.outcome).toBe("normal-acceptance");
-  });
-
-  it("stops at the default review repair budget after exactly two review repairs, creates no next-pass artifact, and reaches HUMAN through final-review routing", async () => {
-    gate.action = "rework";
-    const state = await run();
-    expect(state.finalStatus).toBe("human");
-    expect(state.deterministicRepairPasses).toBe(0);
-    expect(state.reviewRepairPasses).toBe(DEFAULT_CONFIG.maxReviewRepairPasses);
-    expect(state.repairPasses).toBe(DEFAULT_CONFIG.maxReviewRepairPasses);
-    expect(assignmentsOf("review-repair")).toBe(DEFAULT_CONFIG.maxReviewRepairPasses);
-    expect(assignmentsOf("deterministic-repair")).toBe(0);
-    expect(workerCalls).toBe(2 + DEFAULT_CONFIG.maxReviewRepairPasses);
-    expect(state.reviewRouting?.outcome).toBe("human-fallback");
-    const files = readdirSync(runDir(state));
-    for (let pass = 1; pass <= DEFAULT_CONFIG.maxReviewRepairPasses; pass++) {
-      expect(files).toContain(`review-repair-${pass}.json`);
-      expect(files).toContain(`review-repair-gate-${pass}.json`);
-      expect(files).toContain(`verification-after-review-repair-${pass}.json`);
-    }
-    // No third (next-pass) worker, gate, or verification artifact exists.
-    expect(files).not.toContain("review-repair-3.json");
-    expect(files).not.toContain("review-repair-gate-3.json");
-    expect(files).not.toContain("verification-after-review-repair-3.json");
-    expect(json(runDir(state), "run-summary.json").reviewRouting).toEqual(state.reviewRouting);
-  });
-
-  it("honors an explicit non-default review repair budget, creating no next-pass artifact and reaching HUMAN through final-review routing", async () => {
-    config.maxReviewRepairPasses = 3;
-    gate.action = "rework";
-    const state = await run();
-    expect(state.finalStatus).toBe("human");
-    expect(state.deterministicRepairPasses).toBe(0);
-    expect(state.reviewRepairPasses).toBe(3);
-    expect(state.repairPasses).toBe(3);
-    expect(assignmentsOf("review-repair")).toBe(3);
-    expect(workerCalls).toBe(2 + 3);
-    expect(state.reviewRouting?.outcome).toBe("human-fallback");
-    const files = readdirSync(runDir(state));
-    for (let pass = 1; pass <= 3; pass++) {
-      expect(files).toContain(`review-repair-${pass}.json`);
-      expect(files).toContain(`review-repair-gate-${pass}.json`);
-      expect(files).toContain(`verification-after-review-repair-${pass}.json`);
-    }
-    // The bounded loop must stop exactly at the explicit limit: no fourth pass.
-    expect(files).not.toContain("review-repair-4.json");
-    expect(files).not.toContain("review-repair-gate-4.json");
-    expect(files).not.toContain("verification-after-review-repair-4.json");
-    // The final (still rework) gate is persisted and drives the HUMAN routing.
-    expect(json(runDir(state), "review-gate-after-repair-3.json")).toEqual(gate);
-    expect(json(runDir(state), "review-routing.json")).toEqual(state.reviewRouting);
-    expect(json(runDir(state), "run-summary.json").reviewRouting).toEqual(state.reviewRouting);
   });
 
   it("accepts after one deterministic repair restores verification and two later review repairs, with both classes' pass-1 evidence coexisting", async () => {
@@ -910,72 +790,6 @@ describe("controller release reliability", () => {
       ["repairer", "agent", "prov-repairer/model-repairer", "completed"],
       ["repairer", "agent", "prov-repairer/model-repairer", "completed"],
     ]);
-  });
-
-  it("runs zero repair assignments when both explicit budgets are zero, and reaches HUMAN through final-review routing", async () => {
-    config.maxDeterministicRepairPasses = 0;
-    config.maxReviewRepairPasses = 0;
-    config.verificationCommands = ['node -e "process.exit(require(\'fs\').readFileSync(\'a.txt\',\'utf8\').startsWith(\'baseline\')?0:1)"'];
-    gate.action = "rework"; // confident rework cannot override the zero budgets
-    const state = await run();
-    expect(state.finalStatus).toBe("human");
-    expect(state.deterministicRepairPasses).toBe(0);
-    expect(state.reviewRepairPasses).toBe(0);
-    expect(state.repairPasses).toBe(0);
-    expect(assignmentsOf("deterministic-repair")).toBe(0);
-    expect(assignmentsOf("review-repair")).toBe(0);
-    expect(workerCalls).toBe(2);
-    const files = readdirSync(runDir(state));
-    expect(files).not.toContain("deterministic-repair-1.json");
-    expect(files).not.toContain("review-repair-1.json");
-    expect(files).not.toContain("verification-after-deterministic-repair-1.json");
-    expect(files).not.toContain("verification-after-review-repair-1.json");
-    expect(state.telemetry?.some((stage) => stage.stage === "repairer")).toBe(false);
-    expect(state.reviewRouting?.outcome).toBe("human-fallback");
-    expect(json(runDir(state), "state.json")).toMatchObject({ deterministicRepairPasses: 0, reviewRepairPasses: 0, repairPasses: 0 });
-    expect(json(runDir(state), "run-summary.json")).toMatchObject({ deterministicRepairPasses: 0, reviewRepairPasses: 0, repairPasses: 0 });
-  });
-
-  it("honors an explicit deterministic budget greater than one, counting repair assignments separately from implementation workers", async () => {
-    config.maxDeterministicRepairPasses = 2;
-    const check = 'node -e "process.exit(require(\'fs\').readFileSync(\'a.txt\',\'utf8\').startsWith(\'good\')?0:1)"';
-    config.verificationCommands = [check];
-    writeFileSync(join(cwd, "a.txt"), "good baseline\n");
-    await git(cwd, "add", "a.txt");
-    await git(cwd, "commit", "-m", "good baseline");
-    let deterministicSegments = 0;
-    writeWorker = async (options) => {
-      const kind = assignmentKind(options);
-      if (kind === "implementation") {
-        const id = workerId(options.prompt);
-        writeFileSync(join(options.cwd, `${id}.txt`), id === "a" ? "bad implementation\n" : `implemented b\n`);
-      } else if (kind === "deterministic-repair") {
-        deterministicSegments++;
-        // Repair 1 leaves the check failing; repair 2 restores it.
-        writeFileSync(join(options.cwd, "a.txt"), deterministicSegments === 1 ? "still failing after repair\n" : "good after second deterministic repair\n");
-      }
-    };
-    const state = await run();
-    expect(state.finalStatus).toBe("accepted");
-    expect(state.deterministicRepairPasses).toBe(2);
-    expect(state.reviewRepairPasses).toBe(0);
-    expect(state.repairPasses).toBe(2);
-    // Repair assignments are counted separately from implementation workers.
-    expect(assignmentsOf("deterministic-repair")).toBe(2);
-    expect(assignmentsOf("implementation")).toBe(2);
-    expect(workerCalls).toBe(4);
-    expect(json(runDir(state), "verification-after-deterministic-repair-1.json").passed).toBe(false);
-    expect(json(runDir(state), "verification-after-deterministic-repair-2.json").passed).toBe(true);
-    // Only implementation workers contribute to state.workers; repair reports
-    // are pass-scoped artifacts, not implementation evidence.
-    expect(state.workers?.map((report) => report.unitId)).toEqual(["a", "b"]);
-    expect(state.telemetry?.filter((stage) => stage.stage === "implementer")).toHaveLength(2);
-    expect(state.telemetry?.filter((stage) => stage.stage === "repairer")).toHaveLength(2);
-    const files = readdirSync(runDir(state));
-    expect(files).not.toContain("review-repair-1.json");
-    expect(files).toContain("deterministic-repair-1.json");
-    expect(files).toContain("deterministic-repair-2.json");
-    expect(json(runDir(state), "run-summary.json")).toMatchObject({ deterministicRepairPasses: 2, reviewRepairPasses: 0, repairPasses: 2 });
   });
 
   it("uses non-default final thresholds in the actual controller", async () => {
