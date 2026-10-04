@@ -95,7 +95,7 @@ These are built-in assignments, not required architecture: any models available 
 ### Install a tagged release
 
 ```text
-pi install git:github.com/kieran-a-egan/pi-software-factory@v0.9.0
+pi install git:github.com/kieran-a-egan/pi-software-factory@v0.10.0
 ```
 
 Pinned Git refs stay fixed until you explicitly update them.

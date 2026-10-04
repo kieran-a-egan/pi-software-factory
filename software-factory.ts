@@ -7,7 +7,7 @@ import { collectModelRoles } from "./src/setup-ui.js";
 import { formatDuration, formatStageName, formatStageSummary, formatTokens } from "./src/stage-presentation.js";
 import type { ContextUsageSnapshot, FactoryProgressEvent, FactoryRunState, StageTelemetry, TokenUsageSnapshot } from "./src/types.js";
 
-const VERSION = "0.9.0";
+const VERSION = "0.10.0";
 const ENTRY_TYPE = "software-factory";
 
 type TranscriptEntry =

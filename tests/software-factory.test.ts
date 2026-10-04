@@ -655,7 +655,7 @@ describe("parallel active stages", () => {
     expect(one.stages).toEqual([unit1]);
     expect(harness.render(one)).toBe(
       [
-        "Software Factory v0.9.0 · Status",
+        "Software Factory v0.10.0 · Status",
         "Objective: build in parallel",
         "Current: Implementer [prov-im/model-im-2] (implementation unit 2)",
         "Totals: 1 stages · 2.0s wall · 600 tok",
@@ -698,7 +698,7 @@ describe("parallel active stages", () => {
     expect(settled.runningStages).toBeUndefined();
     expect(harness.render(settled)).toBe(
       [
-        "Software Factory v0.9.0 · Status",
+        "Software Factory v0.10.0 · Status",
         "Objective: build in parallel",
         "Run: run-1",
         "Final: ACCEPTED",
@@ -827,7 +827,7 @@ describe("checkpoint resumption", () => {
     ]);
     expect(harness.render(active)).toBe(
       [
-        "Software Factory v0.9.0 · Status",
+        "Software Factory v0.10.0 · Status",
         "Objective: resume after checkpoint",
         "Current: Implementer [prov-im/model-im-2] (implementation unit 2) | Implementer [prov-im/model-im-1r] (implementation unit 1 · resume 1)",
         "Totals: 1 stages · 2.0s wall · 600 tok",
@@ -847,7 +847,7 @@ describe("checkpoint resumption", () => {
     expect(one.stages).toEqual([initialSegment, resumedSegment]);
     expect(harness.render(one)).toBe(
       [
-        "Software Factory v0.9.0 · Status",
+        "Software Factory v0.10.0 · Status",
         "Objective: resume after checkpoint",
         "Current: Implementer [prov-im/model-im-2] (implementation unit 2)",
         "Totals: 2 stages · 4.5s wall · 1,080 tok",
@@ -905,7 +905,7 @@ describe("checkpoint resumption", () => {
     expect(settled.runningStages).toBeUndefined();
     expect(harness.render(settled)).toBe(
       [
-        "Software Factory v0.9.0 · Status",
+        "Software Factory v0.10.0 · Status",
         "Objective: resume after checkpoint",
         "Run: run-1",
         "Final: ACCEPTED",
@@ -973,7 +973,7 @@ describe("aggregate presentation", () => {
     const statusEntry = harness.lastEntry();
     expect(harness.render(statusEntry)).toBe(
       [
-        "Software Factory v0.9.0 · Status",
+        "Software Factory v0.10.0 · Status",
         "Objective: disjoint aggregate",
         "Run: run-1",
         "Final: ACCEPTED",
@@ -1038,7 +1038,7 @@ describe("aggregate presentation", () => {
     const statusEntry = harness.lastEntry();
     expect(harness.render(statusEntry)).toBe(
       [
-        "Software Factory v0.9.0 · Status",
+        "Software Factory v0.10.0 · Status",
         "Objective: overlapping aggregate",
         "Run: run-1",
         "Final: ACCEPTED",
@@ -1107,7 +1107,7 @@ describe("session persistence", () => {
     expect(statusEntry.stages).toEqual(persistedState.telemetry);
     expect(harness.render(statusEntry)).toBe(
       [
-        "Software Factory v0.9.0 · Status",
+        "Software Factory v0.10.0 · Status",
         "Objective: persisted objective",
         "Run: run-persisted",
         "Final: ACCEPTED",
