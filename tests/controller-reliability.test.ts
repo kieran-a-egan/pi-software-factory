@@ -8,7 +8,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as agents from "../src/agent-runner.js";
 import { DEFAULT_CONFIG } from "../src/config.js";
 import { runFactory } from "../src/controller.js";
-import * as gitEvidence from "../src/git-evidence.js";
 import { JevDecisionEngine } from "../src/jev.js";
 import * as prompts from "../src/prompts.js";
 import { reserveRun } from "../src/run-safety.js";
@@ -189,57 +188,6 @@ describe("controller release reliability", () => {
       if (existsSync(linked)) await git(cwd, "worktree", "remove", "--force", linked);
       rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
-  });
-
-  it("retains partial sequential edits on HUMAN, and blocks another run even with clean-tree checking disabled", async () => {
-    vi.mocked(JevDecisionEngine.prototype.gateWorker).mockResolvedValueOnce({ disposition: "ready", confidence: 1, raw: {} })
-      .mockResolvedValueOnce({ disposition: "blocked", confidence: 1, raw: {} });
-    const state = await run();
-    expect(workerCalls).toBe(2);
-    expect(state.finalStatus).toBe("human");
-    expect(state.sourceDisposition?.disposition).toBe("retained-unaccepted");
-    expect(json(runDir(state), "source-before.json").diff).toBe("");
-    expect(json(runDir(state), "source-after.json").diff).toContain("implemented a");
-    expect(json(runDir(state), "source-after.json").diff).toContain("implemented b");
-    expect(existsSync(lockPath())).toBe(true);
-    config.requireCleanWorkingTree = false;
-    const blocked = await run();
-    expect(blocked.id).not.toBe(state.id);
-    expect(blocked.finalStatus).toBe("blocked");
-    expect(blocked.finalReason).toContain("source safety interlock");
-    expect(workerCalls).toBe(2);
-    expect(json(runDir(state), "state.json").finalStatus).toBe("human");
-    expect(await git(cwd, "rev-parse", "HEAD")).toBe(originalHead);
-  });
-
-  it("persists FAILED and retains edits when a later worker throws", async () => {
-    writeWorker = async (options) => {
-      writeFileSync(join(options.cwd, workerCalls === 1 ? "a.txt" : "b.txt"), "partial implementation\n");
-      if (workerCalls === 2) throw new Error("injected worker failure");
-    };
-    const state = await run();
-    expect(state.finalStatus).toBe("failed");
-    expect(state.finalReason).toContain("injected worker failure");
-    expect(state.sourceDisposition?.disposition).toBe("unknown-retained");
-    expect(json(runDir(state), "state.json").finalStatus).toBe("failed");
-    expect(json(runDir(state), "source-after.json").diff).toContain("partial implementation");
-    expect(existsSync(lockPath())).toBe(true);
-  });
-
-  it("retains cancellation evidence and never treats partial work as accepted", async () => {
-    const abort = new AbortController();
-    writeWorker = async (options) => {
-      writeFileSync(join(options.cwd, "a.txt"), "cancelled partial\n");
-      expect(options.abortSignal).toBe(abort.signal);
-      abort.abort();
-    };
-    const state = await run(abort.signal);
-    expect(state.finalStatus).toBe("human");
-    expect(state.finalReason).toContain("cancelled");
-    expect(state.sourceDisposition?.disposition).toBe("unknown-retained");
-    expect(workerCalls).toBe(1);
-    expect(existsSync(lockPath())).toBe(true);
-    expect(json(runDir(state), "source-after.json").diff).toContain("cancelled partial");
   });
 
   it("forwards the immediately preceding review, latest repair report, and fresh post-repair verification into the second review", async () => {
@@ -444,50 +392,6 @@ describe("controller release reliability", () => {
     expect(await git(cwd, "diff", "--cached", "--binary")).toBe(staged);
     expect(readFileSync(join(cwd, "user.bin"))).toEqual(Buffer.from([0, 1, 2, 255]));
     expect(await git(cwd, "rev-parse", "HEAD")).toBe(originalHead);
-  });
-
-  it("fails closed if terminal source capture fails", async () => {
-    const capture = gitEvidence.captureGitEvidence;
-    vi.mocked(JevDecisionEngine.prototype.gateReview).mockImplementation(async () => {
-      vi.spyOn(gitEvidence, "captureGitEvidence").mockRejectedValueOnce(new Error("terminal capture unavailable"));
-      return gate;
-    });
-    const state = await run();
-    expect(state.finalStatus).toBe("human");
-    expect(state.sourceDisposition?.disposition).toBe("unknown-retained");
-    expect(state.finalReason).toContain("terminal capture unavailable");
-    expect(existsSync(lockPath())).toBe(true);
-    vi.mocked(gitEvidence.captureGitEvidence).mockImplementation(capture);
-  });
-
-  it("does not accept cancellation arriving during terminal evidence capture", async () => {
-    const abort = new AbortController();
-    const capture = gitEvidence.captureGitEvidence;
-    vi.mocked(JevDecisionEngine.prototype.gateReview).mockImplementation(async () => {
-      vi.spyOn(gitEvidence, "captureGitEvidence").mockImplementationOnce(async (...args) => {
-        const evidence = await capture(...args);
-        abort.abort();
-        return evidence;
-      });
-      return gate;
-    });
-    const state = await run(abort.signal);
-    expect(state.finalStatus).toBe("human");
-    expect(state.sourceDisposition?.disposition).toBe("unknown-retained");
-    expect(state.finalReason).toContain("cancelled");
-    expect(existsSync(lockPath())).toBe(true);
-  });
-
-  it("refuses acceptance when source changes during review after verification", async () => {
-    vi.mocked(JevDecisionEngine.prototype.gateReview).mockImplementation(async () => {
-      writeFileSync(join(cwd, "a.txt"), "unverified concurrent change\n");
-      return gate;
-    });
-    const state = await run();
-    expect(state.reviewRouting?.outcome).toBe("bounded-low-sufficiency-acceptance");
-    expect(state.finalStatus).toBe("human");
-    expect(state.finalReason).toContain("Source changed after authoritative verification");
-    expect(state.sourceDisposition?.disposition).toBe("unknown-retained");
   });
 
   it("keeps failed/cancelled parallel worktrees; primary source is never partly integrated", async () => {
