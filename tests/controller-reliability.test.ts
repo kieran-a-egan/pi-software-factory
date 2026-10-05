@@ -144,7 +144,22 @@ async function removeFixtureWorktrees(repo: string) {
     const dir = field.slice(9);
     // These git-init fixtures have a .git directory; only linked worktrees
     // have a .git file. Path spelling (including Windows aliases) is irrelevant.
-    if (!lstatSync(join(dir, ".git")).isFile()) continue;
+    let stats;
+    try {
+      stats = lstatSync(join(dir, ".git"));
+    } catch (error) {
+      // Stale worktree listings can outlive their directories; only ENOENT
+      // means the entry is already gone, so any other error propagates.
+      if (
+        !(typeof error === "object" &&
+          error !== null &&
+          (error as { code?: unknown }).code === "ENOENT")
+      ) {
+        throw error;
+      }
+      continue;
+    }
+    if (!stats.isFile()) continue;
     await git(repo, "worktree", "remove", "--force", dir);
   }
 }
