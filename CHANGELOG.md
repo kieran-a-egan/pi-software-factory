@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.0
+
+- replace fixed Qwen/Astra configuration buckets with explicit `scout`, `architect`, `implementer`, `reviewer`, and `repairer` model roles, with role-specific provider/model/thinking assignments and semantic stage presentation
+- add interactive `/factory-setup` model-role configuration using Pi's available model registry, with validated persistence of the `models` block and no mutation of the active chat model
+- harden `/factory-setup` cancellation, concurrency, late-save, registry, normalization, selector, confirmation, and persistence failure handling with focused regression coverage
+- retry transient Windows run-store rename failures (`EPERM`, `EACCES`, `EBUSY`) with a short bounded retry while preserving atomic replacement semantics and the original exhausted error
+- reduce controller reliability test overhead by making ordinary fixtures unscoped and opting scope/evidence/parallel tests into real Git scope capture only when their behavior requires it
 ## 0.9.0
 
 - add the deterministic v1 autonomy benchmark contract, validation, per-case scoring, aggregate release-gate scoring, run-artifact ingestion, and offline scoring CLIs

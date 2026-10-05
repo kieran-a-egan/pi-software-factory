@@ -1,10 +1,13 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { loadConfig } from "./src/config.js";
+import { loadConfig, MODEL_ROLES } from "./src/config.js";
 import { runFactory } from "./src/controller.js";
+import { normalizeAvailableModels, persistModelRoles } from "./src/setup.js";
+import { collectModelRoles } from "./src/setup-ui.js";
+import { formatDuration, formatStageName, formatStageSummary, formatTokens } from "./src/stage-presentation.js";
 import type { ContextUsageSnapshot, FactoryProgressEvent, FactoryRunState, StageTelemetry, TokenUsageSnapshot } from "./src/types.js";
 
-const VERSION = "0.9.0";
+const VERSION = "0.10.0";
 const ENTRY_TYPE = "software-factory";
 
 type TranscriptEntry =
@@ -53,33 +56,15 @@ type TranscriptEntry =
       runningStages?: string[];
     };
 
-function formatDuration(ms?: number): string {
-  if (ms === undefined) return "";
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  const minutes = Math.floor(ms / 60_000);
-  const seconds = ((ms % 60_000) / 1000).toFixed(1);
-  return `${minutes}m ${seconds}s`;
-}
-
-function formatTokens(tokens?: TokenUsageSnapshot): string {
-  if (!tokens?.total) return "";
-  return `${tokens.total.toLocaleString()} tok`;
-}
-
 function truncateInline(value: string, maxChars = 120): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (normalized.length <= maxChars) return normalized;
   return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
 }
 
-function stageName(stage: StageTelemetry): string {
-  return `${stage.stage}${stage.label ? ` (${stage.label})` : ""}`;
-}
-
-function stageSummary(stage: StageTelemetry): string {
-  const suffix = [formatDuration(stage.durationMs), formatTokens(stage.tokens)].filter(Boolean).join(" · ");
-  return `${stage.outcome === "completed" ? "✓" : "✗"} ${stageName(stage)} · ${stage.actor}${suffix ? ` · ${suffix}` : ""}`;
+function activeStageName(key: string, model?: string): string {
+  const [stage, label] = key.split("\u0000");
+  return formatStageName(stage, { label: label || undefined, model });
 }
 
 function aggregate(stages: StageTelemetry[]) {
@@ -173,7 +158,7 @@ function appendRunHistory(lines: string[], state: FactoryRunState, theme: any): 
   if (checkpoints.length > 0 || continuations.length > 0 || parallelBatches.length > 0) {
     lines.push("", theme.bold(theme.fg("muted", "Recovery / concurrency history")));
     for (const checkpoint of checkpoints) {
-      const name = `${checkpoint.stage}${checkpoint.label ? ` (${checkpoint.label})` : ""}`;
+      const name = formatStageName(checkpoint.stage, { label: checkpoint.label });
       lines.push(
         theme.fg(
           "dim",
@@ -215,13 +200,12 @@ function renderTranscriptEntry(data: TranscriptEntry, expanded: boolean, theme: 
   if (data.kind === "stage") {
     const stage = data.telemetry;
     const headline = stage.outcome === "completed"
-      ? theme.fg("success", stageSummary(stage))
-      : theme.fg("error", stageSummary(stage));
+      ? theme.fg("success", formatStageSummary(stage))
+      : theme.fg("error", formatStageSummary(stage));
 
     if (!expanded) return headline;
 
     const details = [headline];
-    if (stage.model) details.push(`${theme.fg("muted", "Model:")} ${stage.model}`);
     if (stage.tokens) {
       details.push(
         `${theme.fg("muted", "Tokens:")} ${stage.tokens.total.toLocaleString()} total ` +
@@ -242,7 +226,7 @@ function renderTranscriptEntry(data: TranscriptEntry, expanded: boolean, theme: 
   }
 
   if (data.kind === "context") {
-    const name = `${data.stage}${data.label ? ` (${data.label})` : ""}`;
+    const name = formatStageName(data.stage, { label: data.label });
     const window = data.usage.contextWindow ? ` / ${data.usage.contextWindow.toLocaleString()}` : "";
     const percent = typeof data.usage.percent === "number" ? ` · ${data.usage.percent.toFixed(1)}%` : "";
     const prefix = data.level === "checkpoint" ? "△ checkpoint requested" : "△ context";
@@ -251,7 +235,7 @@ function renderTranscriptEntry(data: TranscriptEntry, expanded: boolean, theme: 
   }
 
   if (data.kind === "checkpoint-saved") {
-    const name = `${data.stage}${data.label ? ` (${data.label})` : ""}`;
+    const name = formatStageName(data.stage, { label: data.label });
     const window = data.usage.contextWindow ? ` / ${data.usage.contextWindow.toLocaleString()}` : "";
     const percent = typeof data.usage.percent === "number" ? ` · ${data.usage.percent.toFixed(1)}%` : "";
     const line = `↻ checkpoint saved #${data.index} · ${name} · ${data.usage.tokens.toLocaleString()}${window} tok${percent}`;
@@ -304,7 +288,7 @@ function renderTranscriptEntry(data: TranscriptEntry, expanded: boolean, theme: 
       );
     }
     if (expanded && stages.length > 0) {
-      lines.push("", theme.fg("dim", stages.map(stageSummary).join("\n")));
+      lines.push("", theme.fg("dim", stages.map(formatStageSummary).join("\n")));
       appendRunHistory(lines, data.state, theme);
     }
     return lines.join("\n");
@@ -360,7 +344,7 @@ function renderTranscriptEntry(data: TranscriptEntry, expanded: boolean, theme: 
 
   if (data.stages.length > 0) {
     lines.push("", ...data.stages.map((stage) => {
-      const line = stageSummary(stage);
+      const line = formatStageSummary(stage);
       return stage.outcome === "completed" ? theme.fg("success", line) : theme.fg("error", line);
     }));
   }
@@ -382,10 +366,11 @@ function findPersistedLastState(ctx: any): FactoryRunState | undefined {
 
 export default function softwareFactory(pi: ExtensionAPI) {
   let running = false;
+  let setupInProgress = false;
   let lastState: FactoryRunState | undefined;
   let lastObjective: string | undefined;
   let progressEvents: FactoryProgressEvent[] = [];
-  const activeStages = new Map<string, string>();
+  const activeStages = new Map<string, { model?: string }>();
 
   pi.registerEntryRenderer(ENTRY_TYPE, (entry, options, theme) => {
     const data = entry.data as TranscriptEntry;
@@ -400,7 +385,7 @@ export default function softwareFactory(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("factory", {
-    description: "Run the Jev-routed Qwen/Astra software factory",
+    description: "Run the Jev-routed software factory",
     handler: async (args, ctx) => {
       const objective = args.trim();
       if (!objective) {
@@ -433,18 +418,17 @@ export default function softwareFactory(pi: ExtensionAPI) {
         const result = await runFactory(ctx.cwd, objective, config, (event) => {
           progressEvents.push(event);
           if (event.type === "started") {
-            const label = event.label ? ` (${event.label})` : "";
-            const name = `${event.stage}${label}`;
-            activeStages.set(`${event.stage}\u0000${event.label ?? ""}`, name);
+            const name = formatStageName(event.stage, { label: event.label, model: event.model });
+            activeStages.set(`${event.stage}\u0000${event.label ?? ""}`, { model: event.model });
             ctx.ui.setStatus("software-factory", `Factory · ${name}`);
             return;
           }
 
           if (event.type === "context") {
-            const label = event.label ? ` (${event.label})` : "";
+            const active = activeStages.get(`${event.stage}\u0000${event.label ?? ""}`);
             ctx.ui.setStatus(
               "software-factory",
-              `Factory · ${event.stage}${label} · ${event.usage.tokens.toLocaleString()} ctx`,
+              `Factory · ${formatStageName(event.stage, { label: event.label, model: active?.model })} · ${event.usage.tokens.toLocaleString()} ctx`,
             );
             pi.appendEntry(ENTRY_TYPE, {
               kind: "context",
@@ -534,10 +518,81 @@ export default function softwareFactory(pi: ExtensionAPI) {
         state: lastState,
         stages,
         runningStage: running && lastStarted
-          ? `${lastStarted.stage}${lastStarted.label ? ` (${lastStarted.label})` : ""}`
+          ? formatStageName(lastStarted.stage, { label: lastStarted.label, model: lastStarted.model })
           : undefined,
-        runningStages: running ? [...activeStages.values()] : undefined,
+        runningStages: running
+          ? [...activeStages.entries()].map(([key, info]) => activeStageName(key, info.model))
+          : undefined,
       } satisfies TranscriptEntry);
+    },
+  });
+
+  pi.registerCommand("factory-setup", {
+    description: "Configure Software Factory role models",
+    handler: async (_args, ctx) => {
+      if (running) {
+        ctx.ui.notify(
+          "Setup cannot modify configuration while /factory is running. Wait for the run to finish.",
+          "warning",
+        );
+        return;
+      }
+      if (setupInProgress) {
+        ctx.ui.notify("A /factory-setup flow is already in progress in this Pi session.", "warning");
+        return;
+      }
+      if (ctx.hasUI === false) {
+        ctx.ui.notify("Interactive setup requires a Pi UI. Run /factory-setup in an interactive Pi session.", "warning");
+        return;
+      }
+
+      setupInProgress = true;
+      try {
+        const availableModels = normalizeAvailableModels(ctx.modelRegistry.getAvailable());
+        if (availableModels.length === 0) {
+          ctx.ui.notify("Pi exposes no available models. Configure a model provider and retry /factory-setup.", "warning");
+          return;
+        }
+
+        const selection = await collectModelRoles(
+          { select: (title, options) => ctx.ui.select(title, options) },
+          availableModels,
+        );
+        if (selection === undefined) {
+          ctx.ui.notify("Setup cancelled: no complete model selection was made.", "info");
+          return;
+        }
+
+        const summary = MODEL_ROLES.map((role) => {
+          const ref = selection[role];
+          return `${role}: ${ref.provider}/${ref.model} · ${ref.thinking}`;
+        }).join("\n");
+
+        const confirmed = await ctx.ui.confirm("Save Software Factory role models?", summary);
+        if (!confirmed) {
+          ctx.ui.notify("Setup cancelled: the model selection was not saved.", "info");
+          return;
+        }
+
+        if (running) {
+          ctx.ui.notify(
+            "A /factory run started while setup was in progress. Wait for it to finish, then retry /factory-setup.",
+            "warning",
+          );
+          return;
+        }
+
+        persistModelRoles(ctx.cwd, selection, availableModels);
+        ctx.ui.notify(
+          ".pi/software-factory.json updated. The new role assignments apply to the next /factory invocation.",
+          "info",
+        );
+      } catch (error: any) {
+        const message = error?.message ?? String(error);
+        ctx.ui.notify(`Factory setup failed: ${message}`, "error");
+      } finally {
+        setupInProgress = false;
+      }
     },
   });
 }

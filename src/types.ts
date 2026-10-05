@@ -9,6 +9,18 @@ export interface ModelRef {
   thinking: ThinkingLevel;
 }
 
+/**
+ * The five semantic factory roles, each bound to an explicit ModelRef.
+ * Role keys match AgentRole in agent-runner.ts.
+ */
+export interface ModelRoles {
+  scout: ModelRef;
+  architect: ModelRef;
+  implementer: ModelRef;
+  reviewer: ModelRef;
+  repairer: ModelRef;
+}
+
 export interface TokenUsageSnapshot {
   input: number;
   output: number;
@@ -93,7 +105,7 @@ export interface FactoryDecisionRecord {
 export interface StageTelemetry {
   stage: string;
   label?: string;
-  actor: "controller" | "jev" | "qwen" | "astra" | "tools";
+  actor: "controller" | "jev" | "agent" | "tools";
   model?: string;
   startedAt: string;
   endedAt: string;
@@ -129,8 +141,7 @@ export type FactoryProgressEvent =
     };
 
 export interface FactoryConfig {
-  qwen: ModelRef;
-  astra: ModelRef;
+  models: ModelRoles;
   jev: {
     model: string;
     minChoiceConfidence: number;
@@ -201,7 +212,7 @@ export interface PlanGateDecision {
 }
 
 /**
- * Facts reported by a Qwen implementation/repair worker.
+ * Facts reported by an implementation/repair worker.
  * Deliberately contains no success/completion verdict: Jev owns that semantic decision.
  */
 export interface WorkerReport {

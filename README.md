@@ -4,9 +4,8 @@ A controlled software-engineering pipeline for Pi Coding Agent.
 
 It combines:
 
+- **five semantic model roles** — `scout`, `architect`, `implementer`, `reviewer`, and `repairer` — each bound to an explicit provider/model/thinking assignment
 - **Jev** for bounded semantic routing
-- **GPT-6 Astra** for architecture and independent review
-- **local Qwen** for repository scouting, implementation, and repair
 - **deterministic tools** for Git/build/test/typecheck/lint truth
 
 The controller owns the workflow. Models provide evidence and decisions within bounded roles; they do not arbitrarily choose what runs next.
@@ -28,16 +27,16 @@ For release history, see [CHANGELOG.md](CHANGELOG.md).
    Jev intake
         │
         ▼
-   Qwen scout                  read-only
+   Scout                       read-only
         │
         ▼
- Astra architect               read-only
+ Architect                     read-only
         │
         ▼
    Jev plan gate
         │
         ▼
- Qwen implementer(s)           isolated/sequential writes
+ Implementer(s)                isolated/sequential writes
         │
         ▼
  Jev worker gate
@@ -45,15 +44,15 @@ For release history, see [CHANGELOG.md](CHANGELOG.md).
         ▼
  deterministic verification    authoritative
         │
-        ├── fail → bounded deterministic repair → Jev repair gate → reverify
+        ├── fail → bounded deterministic repair (repairer) → Jev repair gate → reverify
         │
         ▼
- Astra independent review      read-only
+ Reviewer (independent)        read-only
         │
         ▼
  Jev final gate
         │
-        ├── rework (high confidence) → bounded review repair → reverify → re-review
+        ├── rework (high confidence) → bounded review repair (repairer) → reverify → re-review
         │
         ├── accept
         └── human/low-confidence rework/replan
@@ -71,7 +70,7 @@ For release history, see [CHANGELOG.md](CHANGELOG.md).
 - Post-implementation verification and repair are unchanged: they run after implementation and remain the gate for the delivered change, while the baseline gate only vets the starting repository.
 - Low-confidence Jev decisions stop for human review.
 - Planning recovery, worker continuation, repair, and context recovery are bounded by configuration.
-- Final acceptance requires deterministic verification, independent Astra review, and Jev acceptance. Normally both configured Jev thresholds must pass. Below-threshold review sufficiency is accepted only when action confidence still passes, residual risk is `low`, Astra's verdict is `clean`, and there are no major/critical findings. Original Jev scores and the selected routing policy are persisted; thresholds and prompts are unchanged.
+- Final acceptance requires deterministic verification, an independent reviewer review, and Jev acceptance. Normally both configured Jev thresholds must pass. Below-threshold review sufficiency is accepted only when action confidence still passes, residual risk is `low`, the reviewer's verdict is `clean`, and there are no major/critical findings. Original Jev scores and the selected routing policy are persisted; thresholds and prompts are unchanged.
 
 ## Requirements
 
@@ -79,26 +78,24 @@ For release history, see [CHANGELOG.md](CHANGELOG.md).
 - Node.js 22.20+ (22.x), or 24.12+
 - Git
 - a TypeSafe API key in `TYPESAFE_API_KEY`
-- Astra available through Pi
-- a local or remote Qwen model exposed through an OpenAI-compatible provider
+- models available through Pi that can fill the five configured roles (`scout`, `architect`, `implementer`, `reviewer`, `repairer`) — any provider/model identity in Pi's model registry can fill a role, so no specific model family is required
 
-The repository defaults target:
+The current built-in defaults (used when no configuration file exists or a configuration omits `models`) assign:
 
 ```text
-Qwen provider:  unsloth-local
-Qwen model:     unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M
-Qwen endpoint:  http://127.0.0.1:8888/v1
-Astra:          openai-codex/gpt-6-astra
+scout, implementer, repairer → unsloth-local / unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M (medium)
+architect, reviewer          → openai-codex / gpt-6-astra (high)
+local Qwen endpoint          → http://127.0.0.1:8888/v1
 ```
 
-See [models.qwen.example.json](models.qwen.example.json) for the local-model provider shape.
+These are built-in assignments, not required architecture: any models available in Pi can fill the roles. Running with the unchanged defaults, however, still requires the specific assigned models — the local Qwen model and Astra — to be available through Pi. See [models.qwen.example.json](models.qwen.example.json) for the local-model provider shape.
 
 ## Installation
 
 ### Install a tagged release
 
 ```text
-pi install git:github.com/kieran-a-egan/pi-software-factory@v0.9.0
+pi install git:github.com/kieran-a-egan/pi-software-factory@v0.10.0
 ```
 
 Pinned Git refs stay fixed until you explicitly update them.
@@ -133,19 +130,58 @@ Project-specific configuration lives at:
 .pi/software-factory.json
 ```
 
-Start from [software-factory.example.json](software-factory.example.json). The built-in defaults include:
+### Interactive setup: `/factory-setup`
+
+The preferred way to configure the model roles is the interactive `/factory-setup` command. It walks the five roles in order — `scout`, `architect`, `implementer`, `reviewer`, `repairer` — and asks you to select a model and then a thinking level for each role from the models available in Pi's model registry (ten selections in total). You confirm the complete selection before anything is saved.
+
+On confirmation, `/factory-setup` writes the `models` block to `.pi/software-factory.json`:
+
+- Only the top-level `models` block is replaced; every other setting in the file is preserved, and a missing file is created.
+- The new role assignments apply to the next `/factory` run. The current chat model is unchanged, and no providers are installed.
+- `/factory-setup` requires an interactive Pi session (a Pi UI), and it is blocked while a `/factory` run is active or while another `/factory-setup` flow is in progress in the same session.
+- If Pi exposes no available models, configure a model provider first and retry.
+- Cancelling any prompt, including the final confirmation, saves nothing.
+
+As the explicit file-based alternative, you can edit `.pi/software-factory.json` manually. Start from [software-factory.example.json](software-factory.example.json).
+
+Models are selected per semantic role through the required `models` block:
+
+- `scout` — repository scouting (read-only)
+- `architect` — architecture and replanning (read-only)
+- `implementer` — implementation workers
+- `reviewer` — independent review (read-only)
+- `repairer` — deterministic and review repair
+
+The built-in defaults assign the local Qwen model to `scout`, `implementer`, and `repairer`, and Astra to `architect` and `reviewer`:
 
 ```json
 {
-  "qwen": {
-    "provider": "unsloth-local",
-    "model": "unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M",
-    "thinking": "medium"
-  },
-  "astra": {
-    "provider": "openai-codex",
-    "model": "gpt-6-astra",
-    "thinking": "high"
+  "models": {
+    "scout": {
+      "provider": "unsloth-local",
+      "model": "unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M",
+      "thinking": "medium"
+    },
+    "architect": {
+      "provider": "openai-codex",
+      "model": "gpt-6-astra",
+      "thinking": "high"
+    },
+    "implementer": {
+      "provider": "unsloth-local",
+      "model": "unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M",
+      "thinking": "medium"
+    },
+    "reviewer": {
+      "provider": "openai-codex",
+      "model": "gpt-6-astra",
+      "thinking": "high"
+    },
+    "repairer": {
+      "provider": "unsloth-local",
+      "model": "unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M",
+      "thinking": "medium"
+    }
   },
   "jev": {
     "model": "jev-latest",
@@ -178,6 +214,8 @@ Start from [software-factory.example.json](software-factory.example.json). The b
 }
 ```
 
+If no configuration file exists, or a configuration omits `models` entirely, the built-in defaults apply. If you supply `models` explicitly, the block must be complete: all five roles, each with a non-empty `provider` and `model` and a `thinking` of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. The top-level `qwen` and `astra` fields are obsolete and are rejected; replace them with the `models` block.
+
 Configure `verificationCommands` for the target repository, for example:
 
 ```json
@@ -205,7 +243,7 @@ Worker routing dispositions are:
 ready | continue | blocked | invalid
 ```
 
-A `continue` decision starts a fresh Qwen session for the same bounded assignment. It is different from a context-budget checkpoint, which resumes an in-progress worker after context pressure.
+A `continue` decision starts a fresh session for the same role — `implementer` for implementation, `repairer` for repair — on the same bounded assignment. It is different from a context-budget checkpoint, which resumes an in-progress worker after context pressure.
 
 ## Running the factory
 
@@ -242,11 +280,11 @@ Ignored caches such as `node_modules` are intentionally absent from disposable w
 
 The factory uses bounded recovery rather than open-ended autonomous loops.
 
-- **Planning recovery:** Jev may request a targeted Qwen rescout or Astra replan.
-- **Worker continuation:** Jev may send the same bounded assignment to a fresh Qwen session when concrete work remains.
+- **Planning recovery:** Jev may request a targeted scout rescout or architect replan.
+- **Worker continuation:** Jev may send the same bounded assignment to a fresh session for the same role — `implementer` for implementation, `repairer` for repair — when concrete work remains.
 - **Deterministic repair:** failed verification triggers bounded repair passes, each followed by re-verification, up to `maxDeterministicRepairPasses` (default `1`).
 - **Review repair:** a high-confidence Jev rework verdict after review triggers bounded repair passes, each followed by re-verification, an independent re-review, and a re-gate, up to `maxReviewRepairPasses` (default `2`).
-- **Context checkpoints:** long-running Qwen implementation/repair sessions can persist compact continuation state and resume in a fresh session.
+- **Context checkpoints:** long-running implementer and repairer sessions can persist compact continuation state and resume in a fresh session.
 - **Worker watchdog:** implementation and repair sessions are aborted if they exceed the configured runtime limit.
 
 Exhausted limits or low-confidence routing stop at `HUMAN`.

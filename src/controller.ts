@@ -293,7 +293,7 @@ export async function runFactory(
         accepted: state.finalStatus === "accepted",
         verifiedDiff: state.verification?.diff,
         writerQuiescenceUncertain: !!abortSignal?.aborted || !!state.telemetry?.some((stage) =>
-          stage.outcome === "failed" && (stage.stage === "qwen-implement" || stage.stage === "qwen-repair")),
+          stage.outcome === "failed" && (stage.stage === "implementer" || stage.stage === "repairer")),
       }, runtimeStatusIgnores, retainedWorktrees);
       if (abortSignal?.aborted) {
         source.disposition = "unknown-retained";
@@ -369,9 +369,9 @@ export async function runFactory(
   const projectContext = loadProjectContext(cwd, config.contextPaths, config.contextMaxBytes);
   store.write("project-context.json", { content: projectContext });
 
-  const runCheckpointedQwenWorker = async (input: {
+  const runCheckpointedWorker = async (input: {
     role: "implementer" | "repairer";
-    stage: "qwen-implement" | "qwen-repair";
+    stage: "implementer" | "repairer";
     label: string;
     artifactStem: string;
     systemPrompt: string;
@@ -379,6 +379,11 @@ export async function runFactory(
     workerCwd?: string;
     abortSignal?: AbortSignal;
   }): Promise<WorkerReport | null> => {
+    // Both recovery loops (Jev continuations and checkpoint resumptions) re-enter
+    // this helper with the same role, so resolving the ModelRef once from the
+    // semantic role keeps every segment on the original role's model.
+    const roleModel = config.models[input.role];
+    const roleName = input.role === "implementer" ? "Implementer" : "Repairer";
     let prompt = input.basePrompt;
     let checkpointCount = 0;
 
@@ -393,13 +398,13 @@ export async function runFactory(
           {
             stage: input.stage,
             label: segmentLabel,
-            actor: "qwen",
-            model: `${config.qwen.provider}/${config.qwen.model}`,
+            actor: "agent",
+            model: `${roleModel.provider}/${roleModel.model}`,
           },
           () => runCheckpointableAgent({
             role: input.role,
             cwd: input.workerCwd ?? cwd,
-            model: config.qwen,
+            model: roleModel,
             systemPrompt: input.systemPrompt,
             prompt,
             modelRuntime,
@@ -426,13 +431,13 @@ export async function runFactory(
         const message = error?.message ?? String(error);
         if (message.includes("context checkpoint threshold")) {
           state.finalStatus = "human";
-          state.finalReason = `Qwen context checkpoint failed for ${input.label}: ${message}`;
+          state.finalReason = `${roleName} context checkpoint failed for ${input.label}: ${message}`;
           setPhase("human");
           return null;
         }
         if (message.includes("exceeded max runtime")) {
           state.finalStatus = "human";
-          state.finalReason = `Qwen worker timed out for ${input.label}: ${message}`;
+          state.finalReason = `${roleName} worker timed out for ${input.label}: ${message}`;
           setPhase("human");
           return null;
         }
@@ -465,7 +470,7 @@ export async function runFactory(
       if (checkpointCount > config.contextBudget.maxCheckpointsPerStage) {
         state.finalStatus = "human";
         state.finalReason =
-          `Qwen exceeded maxCheckpointsPerStage (${config.contextBudget.maxCheckpointsPerStage}) for ${input.label}.`;
+          `${roleName} exceeded maxCheckpointsPerStage (${config.contextBudget.maxCheckpointsPerStage}) for ${input.label}.`;
         setPhase("human");
         return null;
       }
@@ -507,7 +512,7 @@ export async function runFactory(
     }
 
     const gate = await runStage(
-      { stage: "jev-worker-gate", label: input.label, actor: "jev", model: config.jev.model },
+      { stage: "worker-gate", label: input.label, actor: "jev", model: config.jev.model },
       () => jev.gateWorker({
         phase: input.phase,
         assignment: input.assignment,
@@ -553,7 +558,7 @@ export async function runFactory(
   const runBoundedWorkerAssignment = async (input: {
     phase: "implementation" | "repair";
     role: "implementer" | "repairer";
-    stage: "qwen-implement" | "qwen-repair";
+    stage: "implementer" | "repairer";
     label: string;
     assignment: unknown;
     artifactStem: string;
@@ -577,7 +582,7 @@ export async function runFactory(
         ? input.label
         : `${input.label} · continue ${continuationPass}`;
 
-      const worker = await runCheckpointedQwenWorker({
+      const worker = await runCheckpointedWorker({
         role: input.role,
         stage: input.stage,
         label: workerLabel,
@@ -661,7 +666,7 @@ export async function runFactory(
   };
 
   state.intake = await runStage(
-    { stage: "jev-intake", actor: "jev", model: config.jev.model },
+    { stage: "intake", actor: "jev", model: config.jev.model },
     () => jev.classifyIntake(objective),
     (value) => jevExtras(value, config.jev.model),
   );
@@ -673,11 +678,11 @@ export async function runFactory(
   }
 
   const scoutRun = await runStage(
-    { stage: "qwen-scout", actor: "qwen", model: `${config.qwen.provider}/${config.qwen.model}` },
+    { stage: "scout", actor: "agent", model: `${config.models.scout.provider}/${config.models.scout.model}` },
     () => runAgent({
       role: "scout",
       cwd,
-      model: config.qwen,
+      model: config.models.scout,
       systemPrompt: SCOUT_SYSTEM,
       prompt: scoutPrompt(objective, projectContext),
       modelRuntime,
@@ -690,11 +695,11 @@ export async function runFactory(
   store.write("evidence.json", state.scout);
 
   const architectureRun = await runStage(
-    { stage: "astra-architect", actor: "astra", model: `${config.astra.provider}/${config.astra.model}` },
+    { stage: "architect", actor: "agent", model: `${config.models.architect.provider}/${config.models.architect.model}` },
     () => runAgent({
       role: "architect",
       cwd,
-      model: config.astra,
+      model: config.models.architect,
       systemPrompt: ARCHITECT_SYSTEM,
       prompt: architectPrompt({ objective, intake: state.intake!, projectContext, evidence: state.scout! }),
       modelRuntime,
@@ -709,7 +714,7 @@ export async function runFactory(
   const runPlanGate = async (label: string | undefined, artifactName: string) => {
     state.planGatePasses += 1;
     const gate = await runStage(
-      { stage: "jev-plan-gate", label, actor: "jev", model: config.jev.model },
+      { stage: "plan-gate", label, actor: "jev", model: config.jev.model },
       () => jev.gatePlan({ objective, scout: state.scout!, architecture: state.architecture! }),
       (value) => jevExtras(value, config.jev.model),
     );
@@ -734,11 +739,11 @@ export async function runFactory(
     gate: NonNullable<typeof state.planGate>;
   }) => {
     const run = await runStage(
-      { stage: "astra-replan", label: input.label, actor: "astra", model: `${config.astra.provider}/${config.astra.model}` },
+      { stage: "architect", label: input.label, actor: "agent", model: `${config.models.architect.provider}/${config.models.architect.model}` },
       () => runAgent({
         role: "architect",
         cwd,
-        model: config.astra,
+        model: config.models.architect,
         systemPrompt: ARCHITECT_SYSTEM,
         prompt: replanPrompt({
           objective,
@@ -796,11 +801,11 @@ export async function runFactory(
       const pass = state.rescoutPasses;
       const previousArchitecture = state.architecture;
       const supplementalRun = await runStage(
-        { stage: "qwen-rescout", label: `pass ${pass} · ${gate.rescoutFocus}`, actor: "qwen", model: `${config.qwen.provider}/${config.qwen.model}` },
+        { stage: "scout", label: `rescout pass ${pass} · ${gate.rescoutFocus}`, actor: "agent", model: `${config.models.scout.provider}/${config.models.scout.model}` },
         () => runAgent({
           role: "scout",
           cwd,
-          model: config.qwen,
+          model: config.models.scout,
           systemPrompt: SCOUT_SYSTEM,
           prompt: rescoutPrompt({
             objective,
@@ -822,7 +827,7 @@ export async function runFactory(
       store.write(`evidence-merged-${pass}.json`, state.scout);
 
       await reviseArchitecture({
-        label: `after rescout ${pass}`,
+        label: `replan pass ${pass} · after rescout ${pass}`,
         artifactName: `architecture-after-rescout-${pass}.json`,
         trigger: "rescout",
         triggerPass: pass,
@@ -845,7 +850,7 @@ export async function runFactory(
       const pass = state.replanPasses;
       const previousArchitecture = state.architecture;
       await reviseArchitecture({
-        label: `pass ${pass} · ${gate.replanFocus}`,
+        label: `replan pass ${pass} · ${gate.replanFocus}`,
         artifactName: `architecture-replan-${pass}.json`,
         trigger: "replan",
         triggerPass: pass,
@@ -946,7 +951,7 @@ export async function runFactory(
     const worker = await runBoundedWorkerAssignment({
       phase: "implementation",
       role: "implementer",
-      stage: "qwen-implement",
+      stage: "implementer",
       label: `implementation unit ${unit.id}`,
       assignment: unit,
       artifactStem: `implementation-${safeUnitId}`,
@@ -1076,7 +1081,7 @@ export async function runFactory(
           const worker = await runBoundedWorkerAssignment({
             phase: "implementation",
             role: "implementer",
-            stage: "qwen-implement",
+            stage: "implementer",
             label: `implementation unit ${unit.id} · parallel batch ${parallelBatchIndex}`,
             assignment: unit,
             artifactStem: `implementation-${safeUnitId}`,
@@ -1300,7 +1305,7 @@ export async function runFactory(
     const repair = await runBoundedWorkerAssignment({
       phase: "repair",
       role: "repairer",
-      stage: "qwen-repair",
+      stage: "repairer",
       repairClass: "deterministic",
       repairPass: pass,
       label: `deterministic repair ${pass}`,
@@ -1335,11 +1340,11 @@ export async function runFactory(
       : verification.diff;
 
     const reviewRun = await runStage(
-      { stage: "astra-review", label, actor: "astra", model: `${config.astra.provider}/${config.astra.model}` },
+      { stage: "reviewer", label, actor: "agent", model: `${config.models.reviewer.provider}/${config.models.reviewer.model}` },
       () => runAgent({
         role: "reviewer",
         cwd,
-        model: config.astra,
+        model: config.models.reviewer,
         systemPrompt: REVIEWER_SYSTEM,
         prompt: reviewerPrompt({
           objective,
@@ -1363,7 +1368,7 @@ export async function runFactory(
   store.write("review.json", review);
 
   state.reviewGate = await runStage(
-    { stage: "jev-review-gate", actor: "jev", model: config.jev.model },
+    { stage: "review-gate", actor: "jev", model: config.jev.model },
     () => jev.gateReview({
       objective,
       architecture: state.architecture!,
@@ -1405,7 +1410,7 @@ export async function runFactory(
     const repair = await runBoundedWorkerAssignment({
       phase: "repair",
       role: "repairer",
-      stage: "qwen-repair",
+      stage: "repairer",
       repairClass: "review",
       repairPass: pass,
       label: `review repair ${pass}`,
@@ -1435,7 +1440,7 @@ export async function runFactory(
     store.write(`review-after-repair-${pass}.json`, review);
 
     state.reviewGate = await runStage(
-      { stage: "jev-review-gate", label: `after review repair ${pass}`, actor: "jev", model: config.jev.model },
+      { stage: "review-gate", label: `after review repair ${pass}`, actor: "jev", model: config.jev.model },
       () => jev.gateReview({ objective, architecture: state.architecture!, verification, review }),
       (value) => jevExtras(value, config.jev.model),
     );
