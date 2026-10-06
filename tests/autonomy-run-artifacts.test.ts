@@ -17,6 +17,17 @@
  *   `verification-after-*.json` artifact with an explicit boolean are
  *   present (no fallback); a present `false` is preserved as explicit
  *   evidence, not absence,
+ * - an absent `state.json.workers` key is the production shape of a run
+ *   that terminates before implementation (the controller increments
+ *   `planGatePasses` before the first gate evaluation and initializes
+ *   `workers` only at implementation start, and JSON serialization drops
+ *   undefined keys): a completed HUMAN plan-gate fixture with
+ *   `planGatePasses: 1` in summary and state and the production plan-gate
+ *   termination reason ingests with `workerUnits: 0` and no
+ *   `authoritativeVerificationPassed` on the record, while a present
+ *   `workers` value keeps strict validation (`null`, object, string,
+ *   number, boolean, malformed array entries, and missing, empty, or
+ *   non-string `unitId` values are all rejected naming `state.json.workers`),
  * - a present final `state.json.verification` keeps strict validation:
  *   `null`, arrays, primitives, an object missing `passed`, and nonboolean
  *   `passed` values are all rejected naming `state.json.verification` (or
@@ -55,6 +66,7 @@ const HEAD = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b";
 const COMPLETED_AT = "2025-01-15T12:30:00.000Z";
 const FINAL_REASON = "all verification commands passed";
 const HUMAN_FINAL_REASON = "escalated to human: verification command failed";
+const HUMAN_PLAN_GATE_REASON = "Jev plan gate requested human intervention.";
 const SOURCE_DISPOSITION = "accepted-in-place";
 const HUMAN_SOURCE_DISPOSITION = "retained-unaccepted";
 
@@ -189,6 +201,31 @@ function humanEscalationArtifacts(): Record<string, Record<string, unknown> | st
     passed: false,
     command: "npm test",
   };
+  return artifacts;
+}
+
+/**
+ * A completed early HUMAN plan-gate escalation as production persists it:
+ * like `humanEscalationArtifacts`, but shaped exactly like a run that
+ * terminates at an explicit plan-gate HUMAN decision. The controller
+ * increments `planGatePasses` before evaluating the gate, so the first
+ * gate evaluation persists `planGatePasses: 1` in both summary and state,
+ * and an explicit HUMAN gate stops with the production reason
+ * `"Jev plan gate requested human intervention."`. The controller
+ * initializes `workers` only at implementation-phase start, and
+ * `writeState`'s JSON serialization drops the undefined key, so a run
+ * that stops at the plan gate has no `workers` key at all. The persisted
+ * state carries neither `workers` nor `verification`.
+ */
+function humanPlanGateArtifacts(): Record<string, Record<string, unknown> | string> {
+  const artifacts = humanEscalationArtifacts();
+  delete (artifacts["state.json"] as Record<string, unknown>).workers;
+  const summary = artifacts["run-summary.json"] as Record<string, unknown>;
+  summary.finalReason = HUMAN_PLAN_GATE_REASON;
+  summary.planGatePasses = 1;
+  const state = artifacts["state.json"] as Record<string, unknown>;
+  state.finalReason = HUMAN_PLAN_GATE_REASON;
+  state.planGatePasses = 1;
   return artifacts;
 }
 
@@ -429,6 +466,49 @@ it("ingests an early HUMAN run with an absent final verification as incomplete e
   });
 });
 
+it("ingests an early HUMAN plan-gate run with an absent state.json.workers key as zero worker units", async () => {
+  // The stale initial verification.json and the representative
+  // verification-after-repair.json (explicit boolean) are deliberately
+  // retained: neither may substitute for the missing final result.
+  const artifacts = humanPlanGateArtifacts();
+  const runDirectory = await writeRunDirectory(artifacts);
+
+  // The persisted state genuinely lacks both keys: this is the production
+  // omission, not a present empty array.
+  const persistedState = JSON.parse(await readFile(join(runDirectory, "state.json"), "utf8"));
+  expect(Object.hasOwn(persistedState, "workers")).toBe(false);
+  expect(Object.hasOwn(persistedState, "verification")).toBe(false);
+
+  const record = await ingestRunArtifacts(runDirectory, makeMetadata());
+
+  // Completion and identity evidence remain valid on the early escalation,
+  // with the production plan-gate pass count and termination reason.
+  expect(record.runId).toBe(RUN_ID);
+  expect(record.finalStatus).toBe("human");
+  expect(record.finalReason).toBe(HUMAN_PLAN_GATE_REASON);
+  expect(record.sourceDisposition).toBe(HUMAN_SOURCE_DISPOSITION);
+  expect(record.targetStartingCommit).toBe(HEAD);
+  // Explicit caller metadata is preserved unchanged: a HUMAN terminal
+  // status does not infer human implementation intervention.
+  expect(record.humanImplementationIntervention).toBe(false);
+  // Absent final verification AND absent workers: incomplete evidence with
+  // no synthesized key (absent from the record, not merely undefined-valued)
+  // and zero executed worker units; the plan-gate pass is preserved and
+  // every implementation/repair counter is zero.
+  expect(record.authoritativeVerificationPassed).toBeUndefined();
+  expect("authoritativeVerificationPassed" in record).toBe(false);
+  expect(record.counters).toEqual({
+    workerUnits: 0,
+    planGatePasses: 1,
+    repairPasses: 0,
+    rescoutPasses: 0,
+    replanPasses: 0,
+    continuationCount: 0,
+    checkpointCount: 0,
+    parallelBatchCount: 0,
+  });
+});
+
 const malformedVerificationCases: Array<{
   name: string;
   value: unknown;
@@ -457,6 +537,71 @@ it.each(malformedVerificationCases)(
 
     // Present evidence is strictly validated: only an absent value yields
     // incomplete evidence.
+    await expect(ingestRunArtifacts(runDirectory, makeMetadata())).rejects.toThrow(tc.pattern);
+  },
+);
+
+const malformedWorkersCases: Array<{
+  name: string;
+  value: unknown;
+  pattern: RegExp;
+}> = [
+  { name: "null", value: null, pattern: /state\.json\.workers must be an array of worker reports, got null/ },
+  {
+    name: "object",
+    value: { unitId: "u-core" },
+    pattern: /state\.json\.workers must be an array of worker reports, got object/,
+  },
+  { name: "string", value: "u-core", pattern: /state\.json\.workers must be an array of worker reports, got string/ },
+  { name: "number", value: 3, pattern: /state\.json\.workers must be an array of worker reports, got number/ },
+  { name: "boolean", value: true, pattern: /state\.json\.workers must be an array of worker reports, got boolean/ },
+  {
+    name: "array with non-object entry (string)",
+    value: ["u-core"],
+    pattern: /state\.json\.workers\[0\] must be an object, got string/,
+  },
+  { name: "array with non-object entry (null)", value: [null], pattern: /state\.json\.workers\[0\] must be an object, got null/ },
+  {
+    name: "array with non-object entry (number)",
+    value: [7],
+    pattern: /state\.json\.workers\[0\] must be an object, got number/,
+  },
+  {
+    name: "array with non-object entry (array)",
+    value: [["u-core"]],
+    pattern: /state\.json\.workers\[0\] must be an object, got array/,
+  },
+  {
+    name: "entry missing unitId",
+    value: [{}],
+    pattern: /state\.json\.workers\[0\]\.unitId must be a string, got undefined/,
+  },
+  {
+    name: "entry with empty unitId",
+    value: [{ unitId: "" }],
+    pattern: /state\.json\.workers\[0\]\.unitId must be a nonempty string/,
+  },
+  {
+    name: "entry with null unitId",
+    value: [{ unitId: null }],
+    pattern: /state\.json\.workers\[0\]\.unitId must be a string, got null/,
+  },
+  {
+    name: "entry with number unitId",
+    value: [{ unitId: 7 }],
+    pattern: /state\.json\.workers\[0\]\.unitId must be a string, got number/,
+  },
+];
+
+it.each(malformedWorkersCases)(
+  "rejects a present malformed state.json.workers (%s) naming the field",
+  async (tc) => {
+    const artifacts = baseArtifacts();
+    (artifacts["state.json"] as Record<string, unknown>).workers = tc.value;
+    const runDirectory = await writeRunDirectory(artifacts);
+
+    // Present evidence is strictly validated: only an absent key yields
+    // zero executed worker units.
     await expect(ingestRunArtifacts(runDirectory, makeMetadata())).rejects.toThrow(tc.pattern);
   },
 );
@@ -557,6 +702,80 @@ it("is deterministic and non-mutating: equal records, fresh objects, unchanged i
     durationMs: 123456,
   });
   expect(recordB).toEqual(recordA);
+
+  // Fresh nested output objects, not the caller's.
+  expect(recordA).not.toBe(recordB);
+  expect(recordA.counters).not.toBe(recordB.counters);
+  expect(recordA.assertionResults).not.toBe(recordB.assertionResults);
+  expect(recordA.assertionResults).not.toBe(frozen.assertionResults);
+  for (let i = 0; i < recordA.assertionResults.length; i++) {
+    expect(recordA.assertionResults[i]).not.toBe(frozen.assertionResults[i]);
+  }
+
+  // Caller inputs unchanged (frozen metadata survives ingestion untouched).
+  expect(metadata).toEqual(metadataSnapshot);
+  expect(metadata).toBe(frozen);
+  expect(Object.isFrozen(metadata.assertionResults)).toBe(true);
+
+  // Artifacts are only read: every file's bytes are unchanged.
+  expect(await readAllArtifactBytes(runDirectory)).toEqual(bytesBefore);
+});
+
+it("is deterministic and non-mutating for an absent-workers HUMAN run: equal records, fresh objects, unchanged inputs and artifact bytes", async () => {
+  const metadata: IngestRunArtifactsMetadata = {
+    caseId: "case-42",
+    factoryVersionRef: "factory-v0.9.0-rc1+sha.9f86d08",
+    // Explicit intervention and a failing assertion: preserved, never
+    // inferred or scored by ingestion.
+    humanImplementationIntervention: true,
+    assertionResults: [
+      { assertionId: "files-match-scope", passed: true },
+      { assertionId: "no-telemetry-leak", passed: false },
+    ],
+  };
+  const frozen = deepFreeze(metadata);
+  const metadataSnapshot = JSON.parse(JSON.stringify(metadata));
+  const runDirectory = await writeRunDirectory(humanPlanGateArtifacts());
+  const bytesBefore = await readAllArtifactBytes(runDirectory);
+
+  const recordA = await ingestRunArtifacts(runDirectory, frozen);
+  const recordB = await ingestRunArtifacts(runDirectory, frozen);
+
+  // Determinism: two ingests of the absent-workers run produce deep-equal
+  // records that preserve the explicit intervention and the failing
+  // assertion in declared order.
+  expect(recordA).toEqual({
+    caseId: "case-42",
+    schemaVersion: "v1",
+    factoryVersionRef: "factory-v0.9.0-rc1+sha.9f86d08",
+    targetStartingCommit: HEAD,
+    runId: RUN_ID,
+    finalStatus: "human",
+    finalReason: HUMAN_PLAN_GATE_REASON,
+    assertionResults: [
+      { assertionId: "files-match-scope", passed: true },
+      { assertionId: "no-telemetry-leak", passed: false },
+    ],
+    humanImplementationIntervention: true,
+    sourceDisposition: HUMAN_SOURCE_DISPOSITION,
+    counters: {
+      workerUnits: 0,
+      planGatePasses: 1,
+      repairPasses: 0,
+      rescoutPasses: 0,
+      replanPasses: 0,
+      continuationCount: 0,
+      checkpointCount: 0,
+      parallelBatchCount: 0,
+    },
+    durationMs: 123456,
+  });
+  expect(recordB).toEqual(recordA);
+
+  // Absent verification AND absent workers: the key is absent from both
+  // records (not merely undefined-valued).
+  expect("authoritativeVerificationPassed" in recordA).toBe(false);
+  expect("authoritativeVerificationPassed" in recordB).toBe(false);
 
   // Fresh nested output objects, not the caller's.
   expect(recordA).not.toBe(recordB);

@@ -35,7 +35,11 @@
  *   metadata: the artifacts do not establish either.
  * - `workerUnits` is the count of distinct nonempty `state.workers[].unitId`
  *   values; array length overcounts units because the controller appends
- *   implementation continuation reports to `workers`.
+ *   implementation continuation reports to `workers`. An absent `workers`
+ *   key (contract-optional for runs that terminate before implementation,
+ *   e.g., a plan-gate human escalation) means zero executed worker units,
+ *   not invalid evidence; a present value must be a well-formed array of
+ *   worker reports.
  *
  * Identity and completion checks:
  * - `run-summary.json.id`, `state.json.id`, the supplied directory basename,
@@ -284,17 +288,23 @@ export async function ingestRunArtifacts(
   }
 
   // Distinct implemented unit ids: continuation reports appended to `workers`
-  // must not inflate the unit count.
-  if (!Array.isArray(state.workers)) {
-    throw new Error(`${STATE_FILE}.workers must be an array of worker reports, got ${describeType(state.workers)}`);
+  // must not inflate the unit count. An absent `workers` key (contract-
+  // optional for runs that terminate before implementation) means zero
+  // executed worker units, not invalid evidence; a present value must be an
+  // array of well-formed worker reports.
+  let workerUnits = 0;
+  if (state.workers !== undefined) {
+    if (!Array.isArray(state.workers)) {
+      throw new Error(`${STATE_FILE}.workers must be an array of worker reports, got ${describeType(state.workers)}`);
+    }
+    const unitIds = new Set<string>();
+    for (let i = 0; i < state.workers.length; i++) {
+      const report = requireObject(state.workers[i], `${STATE_FILE}.workers[${i}]`);
+      const unitId = requireNonEmptyString(report.unitId, `${STATE_FILE}.workers[${i}].unitId`);
+      unitIds.add(unitId);
+    }
+    workerUnits = unitIds.size;
   }
-  const unitIds = new Set<string>();
-  for (let i = 0; i < state.workers.length; i++) {
-    const report = requireObject(state.workers[i], `${STATE_FILE}.workers[${i}]`);
-    const unitId = requireNonEmptyString(report.unitId, `${STATE_FILE}.workers[${i}].unitId`);
-    unitIds.add(unitId);
-  }
-  const workerUnits = unitIds.size;
 
   // Legacy aggregate-only exception: when state omits both dedicated
   // counters, skip the dedicated reads and sum check; presence of either
