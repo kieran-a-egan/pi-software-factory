@@ -771,11 +771,10 @@ export async function runFactory(
   while (true) {
     const gate = state.planGate!;
 
-    if (gate.confidence < config.jev.minChoiceConfidence) {
-      return stop("human", `Jev plan gate confidence is below threshold: ${gate.confidence.toFixed(3)}.`);
-    }
-
     if (gate.action === "proceed") {
+      if (gate.confidence < config.jev.minChoiceConfidence) {
+        return stop("human", `Jev plan gate confidence is below threshold: ${gate.confidence.toFixed(3)}.`);
+      }
       if (gate.planCompleteProbability < config.jev.minNoulProbability) {
         return stop(
           "human",
