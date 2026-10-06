@@ -9,8 +9,18 @@
  *   stale initial `verification.json` (false) while the final
  *   `state.json.verification.passed` is true, to catch unit overcounting and
  *   stale-verification selection,
- * - an absent final `state.json.verification` is rejected even when the
- *   initial `verification.json` is present (no fallback),
+ * - an absent final `state.json.verification` is ingested as incomplete
+ *   evidence: a realistic early HUMAN run (empty workers, zero counters,
+ *   `retained-unaccepted` disposition in the authoritative artifact and both
+ *   mirrors) succeeds with no `authoritativeVerificationPassed` on the
+ *   record, even when a stale `verification.json` and a
+ *   `verification-after-*.json` artifact with an explicit boolean are
+ *   present (no fallback); a present `false` is preserved as explicit
+ *   evidence, not absence,
+ * - a present final `state.json.verification` keeps strict validation:
+ *   `null`, arrays, primitives, an object missing `passed`, and nonboolean
+ *   `passed` values are all rejected naming `state.json.verification` (or
+ *   its `passed` field),
  * - an absent `source-disposition.json` is rejected rather than substituted
  *   from the summary/state mirrors,
  * - conflicting run identity between two required artifacts is rejected with
@@ -44,7 +54,9 @@ const RUN_ID = "run-abc123";
 const HEAD = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b";
 const COMPLETED_AT = "2025-01-15T12:30:00.000Z";
 const FINAL_REASON = "all verification commands passed";
+const HUMAN_FINAL_REASON = "escalated to human: verification command failed";
 const SOURCE_DISPOSITION = "accepted-in-place";
+const HUMAN_SOURCE_DISPOSITION = "retained-unaccepted";
 
 /** Temp roots created by this suite, removed reliably in `afterEach`. */
 const tempRoots: string[] = [];
@@ -122,6 +134,62 @@ function baseArtifacts(): Record<string, Record<string, unknown> | string> {
       command: "npm test",
     },
   };
+}
+
+/**
+ * A realistic early HUMAN escalation: matching `human` terminal status and
+ * reason across summary/state/disposition, `retained-unaccepted` in the
+ * authoritative artifact and both mirrors, empty workers, zero mirrored
+ * counters, matching zero-length checkpoint/continuation/batch arrays, and
+ * no `state.json.verification` (the early run never reached final
+ * verification). The stale `verification.json` is retained, and a
+ * representative `verification-after-repair.json` with an explicit boolean
+ * is added: neither may supply the absent authoritative value.
+ */
+function humanEscalationArtifacts(): Record<string, Record<string, unknown> | string> {
+  const artifacts = baseArtifacts();
+  const summary = artifacts["run-summary.json"] as Record<string, unknown>;
+  summary.finalStatus = "human";
+  summary.finalReason = HUMAN_FINAL_REASON;
+  summary.repairPasses = 0;
+  summary.rescoutPasses = 0;
+  summary.replanPasses = 0;
+  summary.planGatePasses = 0;
+  summary.workerContinuationCount = 0;
+  summary.checkpointCount = 0;
+  summary.parallelBatchCount = 0;
+  summary.sourceDisposition = {
+    disposition: HUMAN_SOURCE_DISPOSITION,
+    runDir: `C:\\factory\\runs\\${RUN_ID}`,
+  };
+  const state = artifacts["state.json"] as Record<string, unknown>;
+  state.finalStatus = "human";
+  state.finalReason = HUMAN_FINAL_REASON;
+  delete state.verification; // the early escalation never reached final verification
+  state.workers = [];
+  state.deterministicRepairPasses = 0;
+  state.reviewRepairPasses = 0;
+  state.repairPasses = 0;
+  state.rescoutPasses = 0;
+  state.replanPasses = 0;
+  state.planGatePasses = 0;
+  state.checkpoints = [];
+  state.workerContinuations = [];
+  state.parallelBatches = [];
+  state.sourceDisposition = {
+    disposition: HUMAN_SOURCE_DISPOSITION,
+    runDir: `/srv/runs/${RUN_ID}`,
+  };
+  const disposition = artifacts["source-disposition.json"] as Record<string, unknown>;
+  disposition.disposition = HUMAN_SOURCE_DISPOSITION;
+  disposition.finalStatus = "human";
+  // Representative later verification artifact with an explicit boolean:
+  // it must not be consulted as a fallback for the absent final value.
+  artifacts["verification-after-repair.json"] = {
+    passed: false,
+    command: "npm test",
+  };
+  return artifacts;
 }
 
 async function writeRunDirectory(artifacts: Record<string, Record<string, unknown> | string>): Promise<string> {
@@ -326,18 +394,85 @@ it("keeps the dedicated-counter sum check when dedicated counters are present", 
   );
 });
 
-it("rejects an absent final verification even when the initial verification.json exists", async () => {
+it("ingests an early HUMAN run with an absent final verification as incomplete evidence", async () => {
+  // The stale initial verification.json and the representative
+  // verification-after-repair.json (explicit boolean) are deliberately
+  // retained: neither may substitute for the missing final result.
+  const runDirectory = await writeRunDirectory(humanEscalationArtifacts());
+
+  const record = await ingestRunArtifacts(runDirectory, makeMetadata());
+
+  // Completion and identity evidence remain valid on the early escalation.
+  expect(record.finalStatus).toBe("human");
+  expect(record.finalReason).toBe(HUMAN_FINAL_REASON);
+  expect(record.sourceDisposition).toBe(HUMAN_SOURCE_DISPOSITION);
+  expect(record.targetStartingCommit).toBe(HEAD);
+  expect(record.runId).toBe(RUN_ID);
+  // Explicit metadata is preserved unchanged: a HUMAN terminal status does
+  // not infer human implementation intervention.
+  expect(record.humanImplementationIntervention).toBe(false);
+  // The absent final verification is incomplete evidence: no value is
+  // synthesized, and the key is absent from the returned record (not merely
+  // undefined-valued).
+  expect(record.authoritativeVerificationPassed).toBeUndefined();
+  expect("authoritativeVerificationPassed" in record).toBe(false);
+  // Empty workers and matching zero early-run counters.
+  expect(record.counters).toEqual({
+    workerUnits: 0,
+    planGatePasses: 0,
+    repairPasses: 0,
+    rescoutPasses: 0,
+    replanPasses: 0,
+    continuationCount: 0,
+    checkpointCount: 0,
+    parallelBatchCount: 0,
+  });
+});
+
+const malformedVerificationCases: Array<{
+  name: string;
+  value: unknown;
+  pattern: RegExp;
+}> = [
+  { name: "null", value: null, pattern: /state\.json\.verification must be an object, got null/ },
+  { name: "array", value: [{ passed: true }], pattern: /state\.json\.verification must be an object, got array/ },
+  { name: "string primitive", value: "true", pattern: /state\.json\.verification must be an object, got string/ },
+  { name: "boolean primitive", value: true, pattern: /state\.json\.verification must be an object, got boolean/ },
+  {
+    name: "object missing passed",
+    value: { command: "npm test" },
+    pattern: /state\.json\.verification\.passed: missing authoritative verification result/,
+  },
+  { name: "passed string", value: { passed: "true" }, pattern: /state\.json\.verification\.passed must be a boolean, got string/ },
+  { name: "passed number", value: { passed: 1 }, pattern: /state\.json\.verification\.passed must be a boolean, got number/ },
+  { name: "passed null", value: { passed: null }, pattern: /state\.json\.verification\.passed must be a boolean, got null/ },
+];
+
+it.each(malformedVerificationCases)(
+  "rejects a present malformed state.json.verification (%s) naming the field",
+  async (tc) => {
+    const artifacts = baseArtifacts();
+    (artifacts["state.json"] as Record<string, unknown>).verification = tc.value;
+    const runDirectory = await writeRunDirectory(artifacts);
+
+    // Present evidence is strictly validated: only an absent value yields
+    // incomplete evidence.
+    await expect(ingestRunArtifacts(runDirectory, makeMetadata())).rejects.toThrow(tc.pattern);
+  },
+);
+
+it("preserves a present false final verification as explicit evidence, not absence", async () => {
   const artifacts = baseArtifacts();
-  const state = artifacts["state.json"] as Record<string, unknown>;
-  delete state.verification;
-  // The stale initial verification.json is deliberately retained: it must not
-  // be substituted for the missing final result.
+  (artifacts["state.json"] as Record<string, unknown>).verification = {
+    passed: false,
+    command: "npm test",
+  };
   const runDirectory = await writeRunDirectory(artifacts);
 
-  const rejection = ingestRunArtifacts(runDirectory, makeMetadata());
+  const record = await ingestRunArtifacts(runDirectory, makeMetadata());
 
-  await expect(rejection).rejects.toThrow(/state\.json\.verification/);
-  await expect(rejection).rejects.toThrow(/verification\.json \/ verification-after-\*\.json are not fallbacks/);
+  expect(record.authoritativeVerificationPassed).toBe(false);
+  expect("authoritativeVerificationPassed" in record).toBe(true);
 });
 
 it("rejects a missing source-disposition.json rather than falling back to mirrored copies", async () => {

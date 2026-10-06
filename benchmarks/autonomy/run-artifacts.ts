@@ -25,11 +25,12 @@
  *   `targetStartingCommit`; it must be nonempty (an unborn repository has no
  *   starting provenance and is an ingestion error).
  * - `state.json.verification.passed` is the only source of
- *   `authoritativeVerificationPassed`, and it must be explicitly boolean.
- *   `verification.json` and `verification-after-*.json` may predate repairs;
- *   they are neither required inputs nor fallbacks. An absent final
- *   verification is an ingestion error even if an initial verification
- *   artifact exists.
+ *   `authoritativeVerificationPassed`; a present value must be explicitly
+ *   boolean. `verification.json` and `verification-after-*.json` may predate
+ *   repairs; they are neither required inputs nor fallbacks. An absent final
+ *   verification is incomplete evidence (the record carries no
+ *   `authoritativeVerificationPassed`), not an ingestion error, even when an
+ *   initial verification artifact exists.
  * - `caseId` and `factoryVersionRef` come only from the caller-supplied
  *   metadata: the artifacts do not establish either.
  * - `workerUnits` is the count of distinct nonempty `state.workers[].unitId`
@@ -58,10 +59,11 @@
  *   `parallelBatches` arrays, the summary counts must equal the array lengths;
  *   an absent array (contract-optional) means the summary count must be zero.
  *
- * Ingestion never scores: a present `false` verification, failing assertion
- * results, an explicit intervention boolean, and a known (possibly
- * inappropriate) disposition are preserved unchanged and handed to
- * {@link validateBenchmarkExecutionRecord}, which builds the fresh record.
+ * Ingestion never scores: an absent verification, a present `false`
+ * verification, failing assertion results, an explicit intervention boolean,
+ * and a known (possibly inappropriate) disposition are preserved unchanged
+ * and handed to {@link validateBenchmarkExecutionRecord}, which builds the
+ * fresh record.
  * Disagreement between *copies of the same evidence* is an ingestion error;
  * disagreement between evidence and outcome is not. No telemetry is included,
  * and production modules, the scorer, directories beyond the four files,
@@ -265,21 +267,21 @@ export async function ingestRunArtifacts(
   const stateFinalStatus = requireString(state.finalStatus, `${STATE_FILE}.finalStatus`);
   const stateFinalReason = requireString(state.finalReason, `${STATE_FILE}.finalReason`);
 
-  // Authoritative final verification: explicitly boolean, no fallback to
+  // Authoritative final verification: an absent final verification is
+  // incomplete evidence (no value is synthesized); a present value must be a
+  // plain object with an explicitly boolean `passed`. No fallback to
   // verification.json / verification-after-*.json.
-  if (state.verification === undefined) {
-    throw new Error(
-      `${STATE_FILE}.verification: missing final verification result; an absent final verification is an ingestion error and verification.json / verification-after-*.json are not fallbacks`,
+  let authoritativeVerificationPassed: boolean | undefined;
+  if (state.verification !== undefined) {
+    const verification = requireObject(state.verification, `${STATE_FILE}.verification`);
+    if (verification.passed === undefined) {
+      throw new Error(`${STATE_FILE}.verification.passed: missing authoritative verification result`);
+    }
+    authoritativeVerificationPassed = requireBoolean(
+      verification.passed,
+      `${STATE_FILE}.verification.passed`,
     );
   }
-  const verification = requireObject(state.verification, `${STATE_FILE}.verification`);
-  if (verification.passed === undefined) {
-    throw new Error(`${STATE_FILE}.verification.passed: missing authoritative verification result`);
-  }
-  const authoritativeVerificationPassed = requireBoolean(
-    verification.passed,
-    `${STATE_FILE}.verification.passed`,
-  );
 
   // Distinct implemented unit ids: continuation reports appended to `workers`
   // must not inflate the unit count.
