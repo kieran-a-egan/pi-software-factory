@@ -772,6 +772,9 @@ export async function runFactory(
     const gate = state.planGate!;
 
     if (gate.action === "proceed") {
+      if (state.architecture!.implementationUnits.length === 0) {
+        return stop("human", "Jev selected proceed on an architecture with no implementation units.");
+      }
       if (gate.confidence < config.jev.minChoiceConfidence) {
         return stop("human", `Jev plan gate confidence is below threshold: ${gate.confidence.toFixed(3)}.`);
       }

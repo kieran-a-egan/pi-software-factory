@@ -69,7 +69,6 @@ export function validateArchitecture(value: unknown): ArchitectureResult {
       dependsOn: y.dependsOn == null ? undefined : arr(y.dependsOn, "dependsOn").map(String),
     };
   });
-  if (units.length === 0) throw new Error("implementationUnits must contain at least one unit");
 
   return {
     summary: str(v.summary, "summary"),
