@@ -25,16 +25,21 @@
  *   `targetStartingCommit`; it must be nonempty (an unborn repository has no
  *   starting provenance and is an ingestion error).
  * - `state.json.verification.passed` is the only source of
- *   `authoritativeVerificationPassed`, and it must be explicitly boolean.
- *   `verification.json` and `verification-after-*.json` may predate repairs;
- *   they are neither required inputs nor fallbacks. An absent final
- *   verification is an ingestion error even if an initial verification
- *   artifact exists.
+ *   `authoritativeVerificationPassed`; a present value must be explicitly
+ *   boolean. `verification.json` and `verification-after-*.json` may predate
+ *   repairs; they are neither required inputs nor fallbacks. An absent final
+ *   verification is incomplete evidence (the record carries no
+ *   `authoritativeVerificationPassed`), not an ingestion error, even when an
+ *   initial verification artifact exists.
  * - `caseId` and `factoryVersionRef` come only from the caller-supplied
  *   metadata: the artifacts do not establish either.
  * - `workerUnits` is the count of distinct nonempty `state.workers[].unitId`
  *   values; array length overcounts units because the controller appends
- *   implementation continuation reports to `workers`.
+ *   implementation continuation reports to `workers`. An absent `workers`
+ *   key (contract-optional for runs that terminate before implementation,
+ *   e.g., a plan-gate human escalation) means zero executed worker units,
+ *   not invalid evidence; a present value must be a well-formed array of
+ *   worker reports.
  *
  * Identity and completion checks:
  * - `run-summary.json.id`, `state.json.id`, the supplied directory basename,
@@ -58,10 +63,11 @@
  *   `parallelBatches` arrays, the summary counts must equal the array lengths;
  *   an absent array (contract-optional) means the summary count must be zero.
  *
- * Ingestion never scores: a present `false` verification, failing assertion
- * results, an explicit intervention boolean, and a known (possibly
- * inappropriate) disposition are preserved unchanged and handed to
- * {@link validateBenchmarkExecutionRecord}, which builds the fresh record.
+ * Ingestion never scores: an absent verification, a present `false`
+ * verification, failing assertion results, an explicit intervention boolean,
+ * and a known (possibly inappropriate) disposition are preserved unchanged
+ * and handed to {@link validateBenchmarkExecutionRecord}, which builds the
+ * fresh record.
  * Disagreement between *copies of the same evidence* is an ingestion error;
  * disagreement between evidence and outcome is not. No telemetry is included,
  * and production modules, the scorer, directories beyond the four files,
@@ -265,34 +271,40 @@ export async function ingestRunArtifacts(
   const stateFinalStatus = requireString(state.finalStatus, `${STATE_FILE}.finalStatus`);
   const stateFinalReason = requireString(state.finalReason, `${STATE_FILE}.finalReason`);
 
-  // Authoritative final verification: explicitly boolean, no fallback to
+  // Authoritative final verification: an absent final verification is
+  // incomplete evidence (no value is synthesized); a present value must be a
+  // plain object with an explicitly boolean `passed`. No fallback to
   // verification.json / verification-after-*.json.
-  if (state.verification === undefined) {
-    throw new Error(
-      `${STATE_FILE}.verification: missing final verification result; an absent final verification is an ingestion error and verification.json / verification-after-*.json are not fallbacks`,
+  let authoritativeVerificationPassed: boolean | undefined;
+  if (state.verification !== undefined) {
+    const verification = requireObject(state.verification, `${STATE_FILE}.verification`);
+    if (verification.passed === undefined) {
+      throw new Error(`${STATE_FILE}.verification.passed: missing authoritative verification result`);
+    }
+    authoritativeVerificationPassed = requireBoolean(
+      verification.passed,
+      `${STATE_FILE}.verification.passed`,
     );
   }
-  const verification = requireObject(state.verification, `${STATE_FILE}.verification`);
-  if (verification.passed === undefined) {
-    throw new Error(`${STATE_FILE}.verification.passed: missing authoritative verification result`);
-  }
-  const authoritativeVerificationPassed = requireBoolean(
-    verification.passed,
-    `${STATE_FILE}.verification.passed`,
-  );
 
   // Distinct implemented unit ids: continuation reports appended to `workers`
-  // must not inflate the unit count.
-  if (!Array.isArray(state.workers)) {
-    throw new Error(`${STATE_FILE}.workers must be an array of worker reports, got ${describeType(state.workers)}`);
+  // must not inflate the unit count. An absent `workers` key (contract-
+  // optional for runs that terminate before implementation) means zero
+  // executed worker units, not invalid evidence; a present value must be an
+  // array of well-formed worker reports.
+  let workerUnits = 0;
+  if (state.workers !== undefined) {
+    if (!Array.isArray(state.workers)) {
+      throw new Error(`${STATE_FILE}.workers must be an array of worker reports, got ${describeType(state.workers)}`);
+    }
+    const unitIds = new Set<string>();
+    for (let i = 0; i < state.workers.length; i++) {
+      const report = requireObject(state.workers[i], `${STATE_FILE}.workers[${i}]`);
+      const unitId = requireNonEmptyString(report.unitId, `${STATE_FILE}.workers[${i}].unitId`);
+      unitIds.add(unitId);
+    }
+    workerUnits = unitIds.size;
   }
-  const unitIds = new Set<string>();
-  for (let i = 0; i < state.workers.length; i++) {
-    const report = requireObject(state.workers[i], `${STATE_FILE}.workers[${i}]`);
-    const unitId = requireNonEmptyString(report.unitId, `${STATE_FILE}.workers[${i}].unitId`);
-    unitIds.add(unitId);
-  }
-  const workerUnits = unitIds.size;
 
   // Legacy aggregate-only exception: when state omits both dedicated
   // counters, skip the dedicated reads and sum check; presence of either

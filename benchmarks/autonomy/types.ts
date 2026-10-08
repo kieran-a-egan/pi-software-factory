@@ -18,7 +18,12 @@
  *   an otherwise well-formed record, and `assertionResults` may omit declared
  *   assertion identifiers. Absence is an explicit incomplete-evidence state that
  *   scoring converts into a failed case score — it is never filled with an
- *   implicit `false`/`true` default and is not a validation error.
+ *   implicit `false`/`true` default and is not a validation error. The single
+ *   exception: a negative control that ends in its exact expected HUMAN/BLOCKED
+ *   status with source disposition exactly `unchanged` legitimately has no
+ *   final verification state, so its absent `authoritativeVerificationPassed`
+ *   produces no `authoritative-verification-missing` reason (no other evidence
+ *   is optional).
  * - Anything else malformed (missing required fields, wrong field types,
  *   unsupported enums or schema versions, duplicate assertion identifiers,
  *   undeclared result identifiers, malformed telemetry) is a validation error,
@@ -34,7 +39,11 @@
  * === false` flag is legitimate for an escalation and is not itself a
  * negative-control failure; HUMAN status is not evidence of human implementation
  * intervention; a nonaccepted status paired with an accepted-in-place disposition
- * is inconsistent evidence and fails.
+ * is inconsistent evidence and fails. An absent `authoritativeVerificationPassed`
+ * fails a negative control with `authoritative-verification-missing`, except when
+ * the record ends in its exact expected HUMAN/BLOCKED status with source
+ * disposition exactly `unchanged` — the shape a run that escalates at intake or
+ * the plan gate legitimately leaves without a final verification state.
  */
 
 /** The single supported benchmark schema identifier. */
@@ -169,10 +178,13 @@ export interface BenchmarkTelemetry {
  * Provenance strings (`factoryVersionRef`, `targetStartingCommit`, `runId`)
  * are opaque nonempty strings, not Git-hash-validated values.
  *
- * Incomplete-evidence states (all valid shapes that score as failed, never as
- * validation errors): `authoritativeVerificationPassed` absent,
- * `sourceDisposition` absent, and `assertionResults` omitting declared
- * assertion identifiers.
+ * Incomplete-evidence states (valid shapes that score as failed, never as
+ * validation errors): `sourceDisposition` absent, and `assertionResults`
+ * omitting declared assertion identifiers. `authoritativeVerificationPassed`
+ * absent also scores as failed, except for a negative control ending in its
+ * exact expected HUMAN/BLOCKED status with source disposition exactly
+ * `unchanged`, whose absent verification is a legitimate early-escalation
+ * shape.
  */
 export interface BenchmarkExecutionRecord {
   /** Identifier of the definition this execution ran. */
@@ -190,8 +202,11 @@ export interface BenchmarkExecutionRecord {
   finalReason: string;
   /**
    * Whether the factory's own authoritative verification (its declared
-   * verification commands) passed. May be absent (incomplete evidence); a
-   * present `false` on an expected HUMAN/BLOCKED escalation is legitimate.
+   * verification commands) passed. May be absent (incomplete evidence that
+   * fails the case, except a negative control in its exact expected
+   * HUMAN/BLOCKED status with source disposition exactly `unchanged`, whose
+   * absent verification is legitimate); a present `false` on an expected
+   * HUMAN/BLOCKED escalation is legitimate.
    */
   authoritativeVerificationPassed?: boolean;
   /** Results for declared assertions; may omit declared identifiers (incomplete evidence). */
@@ -218,7 +233,11 @@ export type BenchmarkCaseFailureReasonCode =
   "unexpected-terminal-outcome"
   | /** `authoritativeVerificationPassed` is explicitly `false` where a pass requires true. */
   "authoritative-verification-failed"
-  | /** `authoritativeVerificationPassed` is absent (incomplete evidence). */
+  | /**
+   * `authoritativeVerificationPassed` is absent (incomplete evidence); never
+   * emitted for a negative control in its exact expected HUMAN/BLOCKED status
+   * with source disposition exactly `unchanged`.
+   */
   "authoritative-verification-missing"
   | /** A declared deterministic assertion has a result with `passed === false`. */
   "deterministic-assertion-failed"

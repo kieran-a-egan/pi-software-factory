@@ -11,6 +11,7 @@ import * as runSafety from "../src/run-safety.js";
 import type { RunSafetyEvidence } from "../src/run-safety.js";
 import * as storage from "../src/storage.js";
 import type { RunStore } from "../src/storage.js";
+import { validateArchitecture } from "../src/validate.js";
 import * as verification from "../src/verification.js";
 import type {
   ArchitectureResult,
@@ -18,6 +19,7 @@ import type {
   FactoryDecisionRecord,
   FactoryProgressEvent,
   ModelRef,
+  PlanGateDecision,
   ReviewGateDecision,
   ReviewResult,
   ScoutResult,
@@ -1799,5 +1801,528 @@ describe("controller repair budgets (fast, in-memory boundaries)", () => {
       | { deterministicRepairPasses?: number; reviewRepairPasses?: number; repairPasses?: number; finalStatus?: string }
       | undefined;
     expect(runSummary).toMatchObject({ deterministicRepairPasses: 1, reviewRepairPasses: 0, repairPasses: 1, finalStatus: "failed" });
+  });
+});
+
+describe("controller plan-gate confidence policy (fast, in-memory boundaries)", () => {
+  /** Ordered implementer/repairer assignments derived from the existing worker spy. */
+  const workerAssignments = () =>
+    vi.mocked(agents.runCheckpointableAgent).mock.calls.map((call) => ({
+      role: call[0].role,
+      unitId: workerId(call[0].prompt),
+    }));
+
+  /** Typed stage filter over the fake store's recorded decision records. */
+  const decisionsOf = (stage: string) =>
+    (fakeStore?.decisions ?? [])
+      .filter((decision) => (decision as { stage?: string }).stage === stage)
+      .map((decision) => decision as FactoryDecisionRecord);
+
+  /** Full plan-gate decision with the fields the controller consumes. */
+  const planGate = (overrides: Partial<PlanGateDecision> = {}): PlanGateDecision => ({
+    action: "proceed",
+    confidence: 1,
+    planCompleteProbability: 1,
+    implementationRisk: "low",
+    rescoutFocus: "none",
+    replanFocus: "none",
+    raw: {},
+    ...overrides,
+  });
+
+  it("runs a low-confidence replan through its bounded recovery and proceeds after a satisfactory gate", async () => {
+    const firstGate = planGate({ action: "replan", confidence: 0.36, planCompleteProbability: 0.71, replanFocus: "scope" });
+    const secondGate = planGate(); // explicitly satisfactory proceed
+    vi.mocked(JevDecisionEngine.prototype.gatePlan)
+      .mockResolvedValueOnce(firstGate)
+      .mockResolvedValueOnce(secondGate);
+    const state = await run();
+    expect(state.finalStatus).toBe("accepted");
+    // The below-threshold confidence did not block the replan action: exactly
+    // one bounded replan pass ran, and the implementation workers executed.
+    expect(state.replanPasses).toBe(1);
+    expect(state.rescoutPasses).toBe(0);
+    expect(state.planGatePasses).toBe(2);
+    expect(workerAssignments()).toEqual([
+      { role: "implementer", unitId: "a" },
+      { role: "implementer", unitId: "b" },
+    ]);
+    expect(state.workers?.map((report) => report.unitId)).toEqual(["a", "b"]);
+    // The first (low-confidence) gate, the replan pass, and the post-replan
+    // gate are persisted...
+    expect(fakeStore?.written.get("plan-gate.json")).toEqual(firstGate);
+    expect(fakeStore?.written.get("architecture-replan-1.json")).toEqual(state.architecture);
+    expect(fakeStore?.written.get("plan-gate-after-replan-1.json")).toEqual(secondGate);
+    // ...and the final planning artifacts reflect the final satisfactory gate
+    // and architecture.
+    expect(fakeStore?.written.get("plan-gate-final.json")).toEqual(secondGate);
+    expect(fakeStore?.written.get("architecture-final.json")).toEqual(state.architecture);
+    expect(fakeStore?.written.has("evidence-final.json")).toBe(true);
+    // The plan-gate decision history records both ordered gates.
+    expect(decisionsOf("plan-gate").map((decision) => [decision.pass, (decision.decision as { action?: string }).action])).toEqual([
+      [1, "replan"], [2, "proceed"],
+    ]);
+  });
+
+  it("runs a low-confidence rescout through its bounded recovery and proceeds after a satisfactory gate", async () => {
+    const firstGate = planGate({ action: "rescout", confidence: 0.36, planCompleteProbability: 0.71, rescoutFocus: "dependencies" });
+    const secondGate = planGate(); // explicitly satisfactory proceed
+    vi.mocked(JevDecisionEngine.prototype.gatePlan)
+      .mockResolvedValueOnce(firstGate)
+      .mockResolvedValueOnce(secondGate);
+    const state = await run();
+    expect(state.finalStatus).toBe("accepted");
+    // The below-threshold confidence did not block the rescout action: exactly
+    // one bounded rescout pass ran, and the implementation workers executed.
+    expect(state.rescoutPasses).toBe(1);
+    expect(state.replanPasses).toBe(0);
+    expect(state.planGatePasses).toBe(2);
+    expect(workerAssignments()).toEqual([
+      { role: "implementer", unitId: "a" },
+      { role: "implementer", unitId: "b" },
+    ]);
+    // The first (low-confidence) gate, the supplemental and merged scout
+    // evidence, the post-rescout architecture, and the post-rescout gate are
+    // persisted...
+    expect(fakeStore?.written.get("plan-gate.json")).toEqual(firstGate);
+    expect(fakeStore?.written.get("evidence-rescout-1.json")).toEqual(scoutFactory());
+    expect(fakeStore?.written.has("evidence-merged-1.json")).toBe(true);
+    expect(fakeStore?.written.get("architecture-after-rescout-1.json")).toEqual(state.architecture);
+    expect(fakeStore?.written.get("plan-gate-after-rescout-1.json")).toEqual(secondGate);
+    // ...and the final planning artifacts reflect the final satisfactory gate
+    // and architecture.
+    expect(fakeStore?.written.get("plan-gate-final.json")).toEqual(secondGate);
+    expect(fakeStore?.written.get("architecture-final.json")).toEqual(state.architecture);
+    expect(fakeStore?.written.has("evidence-final.json")).toBe(true);
+    // The plan-gate decision history records both ordered gates.
+    expect(decisionsOf("plan-gate").map((decision) => [decision.pass, (decision.decision as { action?: string }).action])).toEqual([
+      [1, "rescout"], [2, "proceed"],
+    ]);
+  });
+
+  it("stops a low-confidence proceed with satisfactory completeness at human before any implementation", async () => {
+    const gate = planGate({ confidence: 0.36, planCompleteProbability: 0.71 });
+    vi.mocked(JevDecisionEngine.prototype.gatePlan).mockResolvedValue(gate);
+    const state = await run();
+    expect(state.finalStatus).toBe("human");
+    expect(state.finalReason).toBe(`Jev plan gate confidence is below threshold: ${gate.confidence.toFixed(3)}.`);
+    expect(state.replanPasses).toBe(0);
+    expect(state.rescoutPasses).toBe(0);
+    expect(state.planGatePasses).toBe(1);
+    // No implementation worker was called; planning stops at the first gate.
+    expect(workerAssignments()).toEqual([]);
+    expect(runnerCalls.filter((call) => call.fn === "runAgent").map((call) => call.role)).toEqual(["scout", "architect"]);
+    expect(fakeStore?.written.get("plan-gate.json")).toEqual(gate);
+  });
+
+  it("stops a low-confidence proceed with satisfactory completeness at human after a recovery pass", async () => {
+    const lowProceed = planGate({ confidence: 0.36, planCompleteProbability: 0.71 });
+    vi.mocked(JevDecisionEngine.prototype.gatePlan)
+      .mockResolvedValueOnce(planGate({ action: "replan", confidence: 0.36, planCompleteProbability: 0.71, replanFocus: "scope" }))
+      .mockResolvedValueOnce(lowProceed);
+    const state = await run();
+    expect(state.finalStatus).toBe("human");
+    expect(state.finalReason).toBe(`Jev plan gate confidence is below threshold: ${lowProceed.confidence.toFixed(3)}.`);
+    expect(state.replanPasses).toBe(1);
+    expect(state.rescoutPasses).toBe(0);
+    expect(state.planGatePasses).toBe(2);
+    // The recovery pass ran, but the below-threshold proceed gate after it
+    // still stops the run before any implementation worker.
+    expect(workerAssignments()).toEqual([]);
+    expect(runnerCalls.filter((call) => call.fn === "runAgent").map((call) => call.role)).toEqual([
+      "scout", "architect", "architect",
+    ]);
+  });
+
+  it("stops a confident proceed below the completeness threshold at human with the completeness reason", async () => {
+    const completeness = config.jev.minNoulProbability - 0.01;
+    const gate = planGate({ planCompleteProbability: completeness });
+    vi.mocked(JevDecisionEngine.prototype.gatePlan).mockResolvedValue(gate);
+    const state = await run();
+    expect(state.finalStatus).toBe("human");
+    expect(state.finalReason).toBe(`Jev selected proceed but plan completeness is below threshold: ${completeness.toFixed(3)}.`);
+    expect(state.planGatePasses).toBe(1);
+    expect(workerAssignments()).toEqual([]);
+    expect(runnerCalls.filter((call) => call.fn === "runAgent").map((call) => call.role)).toEqual(["scout", "architect"]);
+  });
+
+  it("accepts a proceed gate at exactly the configured confidence and completeness thresholds", async () => {
+    const gate = planGate({
+      confidence: config.jev.minChoiceConfidence,
+      planCompleteProbability: config.jev.minNoulProbability,
+    });
+    vi.mocked(JevDecisionEngine.prototype.gatePlan).mockResolvedValue(gate);
+    const state = await run();
+    expect(state.finalStatus).toBe("accepted");
+    expect(state.planGatePasses).toBe(1);
+    // The inclusive thresholds admit the proceed: both implementation
+    // workers execute.
+    expect(workerAssignments()).toEqual([
+      { role: "implementer", unitId: "a" },
+      { role: "implementer", unitId: "b" },
+    ]);
+    expect(state.workers?.map((report) => report.unitId)).toEqual(["a", "b"]);
+  });
+
+  it("preserves a low-confidence human plan gate as an immediate human outcome", async () => {
+    const gate = planGate({ action: "human", confidence: 0.36 });
+    vi.mocked(JevDecisionEngine.prototype.gatePlan).mockResolvedValue(gate);
+    const state = await run();
+    expect(state.finalStatus).toBe("human");
+    expect(state.finalReason).toBe("Jev plan gate requested human intervention.");
+    // The low confidence did not convert the human request into a recovery
+    // pass: no replan or rescout runs, and no implementation worker is
+    // called.
+    expect(state.replanPasses).toBe(0);
+    expect(state.rescoutPasses).toBe(0);
+    expect(state.planGatePasses).toBe(1);
+    expect(workerAssignments()).toEqual([]);
+    expect(runnerCalls.filter((call) => call.fn === "runAgent").map((call) => call.role)).toEqual(["scout", "architect"]);
+    expect(fakeStore?.written.get("plan-gate.json")).toEqual(gate);
+  });
+
+  it("exhausts the configured replan budget on a persistently low-confidence replan and stops at human", async () => {
+    const gate = planGate({ action: "replan", confidence: 0.36, planCompleteProbability: 0.71, replanFocus: "scope" });
+    vi.mocked(JevDecisionEngine.prototype.gatePlan).mockResolvedValue(gate);
+    const limit = config.planningLoops.maxReplanPasses;
+    const state = await run();
+    expect(state.finalStatus).toBe("human");
+    expect(state.finalReason).toBe(`Jev requested another replan after reaching maxReplanPasses (${limit}).`);
+    expect(state.replanPasses).toBe(limit);
+    expect(state.rescoutPasses).toBe(0);
+    expect(state.planGatePasses).toBe(limit + 1);
+    expect(workerAssignments()).toEqual([]);
+    // The initial architect plus exactly the allowed replan passes: no
+    // recovery call beyond the limit.
+    expect(runnerCalls.filter((call) => call.fn === "runAgent").map((call) => call.role)).toEqual(
+      ["scout", ...Array.from({ length: limit + 1 }, () => "architect")],
+    );
+    // Every allowed pass persisted its architecture and gate artifacts...
+    for (let pass = 1; pass <= limit; pass++) {
+      expect(fakeStore?.written.has(`architecture-replan-${pass}.json`)).toBe(true);
+      expect(fakeStore?.written.has(`plan-gate-after-replan-${pass}.json`)).toBe(true);
+    }
+    // ...and no artifact exists beyond the limit.
+    expect(fakeStore?.written.has(`architecture-replan-${limit + 1}.json`)).toBe(false);
+    expect(fakeStore?.written.has(`plan-gate-after-replan-${limit + 1}.json`)).toBe(false);
+  });
+
+  it("exhausts the configured rescout budget on a persistently low-confidence rescout and stops at human", async () => {
+    const gate = planGate({ action: "rescout", confidence: 0.36, planCompleteProbability: 0.71, rescoutFocus: "dependencies" });
+    vi.mocked(JevDecisionEngine.prototype.gatePlan).mockResolvedValue(gate);
+    const limit = config.planningLoops.maxRescoutPasses;
+    const state = await run();
+    expect(state.finalStatus).toBe("human");
+    expect(state.finalReason).toBe(`Jev requested another rescout after reaching maxRescoutPasses (${limit}).`);
+    expect(state.rescoutPasses).toBe(limit);
+    expect(state.replanPasses).toBe(0);
+    expect(state.planGatePasses).toBe(limit + 1);
+    expect(workerAssignments()).toEqual([]);
+    // The initial scout/architect plus exactly one scout and one architect
+    // per allowed rescout pass: no recovery call beyond the limit.
+    const roles: string[] = ["scout", "architect"];
+    for (let pass = 0; pass < limit; pass++) roles.push("scout", "architect");
+    expect(runnerCalls.filter((call) => call.fn === "runAgent").map((call) => call.role)).toEqual(roles);
+    // Every allowed pass persisted its supplemental/merged evidence, the
+    // post-rescout architecture, and the post-rescout gate artifacts...
+    for (let pass = 1; pass <= limit; pass++) {
+      expect(fakeStore?.written.has(`evidence-rescout-${pass}.json`)).toBe(true);
+      expect(fakeStore?.written.has(`evidence-merged-${pass}.json`)).toBe(true);
+      expect(fakeStore?.written.has(`architecture-after-rescout-${pass}.json`)).toBe(true);
+      expect(fakeStore?.written.has(`plan-gate-after-rescout-${pass}.json`)).toBe(true);
+    }
+    // ...and no artifact exists beyond the limit.
+    expect(fakeStore?.written.has(`evidence-rescout-${limit + 1}.json`)).toBe(false);
+    expect(fakeStore?.written.has(`evidence-merged-${limit + 1}.json`)).toBe(false);
+    expect(fakeStore?.written.has(`architecture-after-rescout-${limit + 1}.json`)).toBe(false);
+    expect(fakeStore?.written.has(`plan-gate-after-rescout-${limit + 1}.json`)).toBe(false);
+  });
+
+  it("stops a zero-unit architecture at the plan gate as an immediate human outcome, including a low-confidence human request", async () => {
+    architecture = { ...architecture, implementationUnits: [] };
+    const gate = planGate({ action: "human", confidence: 0.36 });
+    vi.mocked(JevDecisionEngine.prototype.gatePlan).mockResolvedValue(gate);
+    const state = await run();
+    expect(state.finalStatus).toBe("human");
+    expect(state.finalReason).toBe("Jev plan gate requested human intervention.");
+    // The low-confidence human request did not convert into a recovery
+    // pass: planning stops at the first gate with zero workers.
+    expect(state.replanPasses).toBe(0);
+    expect(state.rescoutPasses).toBe(0);
+    expect(state.planGatePasses).toBe(1);
+    expect(workerAssignments()).toEqual([]);
+    expect(runnerCalls.filter((call) => call.fn === "runAgent").map((call) => call.role)).toEqual(["scout", "architect"]);
+    expect(runnerCalls.filter((call) => call.fn === "runCheckpointableAgent")).toEqual([]);
+    // The validated zero-unit architecture and the plan gate are persisted...
+    expect(fakeStore?.written.get("architecture.json")).toEqual(architecture);
+    expect(fakeStore?.written.get("plan-gate.json")).toEqual(gate);
+    // ...and no post-plan stage runs: the baseline verification is the only
+    // verification call, and no review, review gate, or final routing
+    // artifact or decision exists.
+    expect(verifyCalls).toHaveLength(1);
+    expect(fakeStore?.written.has("verification.json")).toBe(false);
+    expect(fakeStore?.written.has("review.json")).toBe(false);
+    expect(fakeStore?.written.has("review-gate.json")).toBe(false);
+    expect(fakeStore?.written.has("review-routing.json")).toBe(false);
+    expect(decisionsOf("worker-gate")).toHaveLength(0);
+    expect(decisionsOf("review-gate")).toHaveLength(0);
+    expect(decisionsOf("final-review-routing")).toHaveLength(0);
+    // The returned and persisted final status agree.
+    const persistedState = fakeStore?.written.get("state.json") as
+      | { finalStatus?: string; finalReason?: string }
+      | undefined;
+    expect(persistedState).toMatchObject({ finalStatus: "human", finalReason: "Jev plan gate requested human intervention." });
+  });
+
+  it("stops a zero-unit proceed with satisfactory confidence and completeness at human with the zero-unit reason", async () => {
+    architecture = { ...architecture, implementationUnits: [] };
+    const gate = planGate(); // confidence=1, planCompleteProbability=1
+    vi.mocked(JevDecisionEngine.prototype.gatePlan).mockResolvedValue(gate);
+    const state = await run();
+    expect(state.finalStatus).toBe("human");
+    expect(state.finalReason).toBe("Jev selected proceed on an architecture with no implementation units.");
+    expect(state.replanPasses).toBe(0);
+    expect(state.rescoutPasses).toBe(0);
+    expect(state.planGatePasses).toBe(1);
+    // A satisfactory proceed on an empty architecture still executes zero
+    // implementation workers.
+    expect(workerAssignments()).toEqual([]);
+    expect(runnerCalls.filter((call) => call.fn === "runAgent").map((call) => call.role)).toEqual(["scout", "architect"]);
+    expect(runnerCalls.filter((call) => call.fn === "runCheckpointableAgent")).toEqual([]);
+    // The validated zero-unit architecture and the plan gate are persisted...
+    expect(fakeStore?.written.get("architecture.json")).toEqual(architecture);
+    expect(fakeStore?.written.get("plan-gate.json")).toEqual(gate);
+    // ...and no post-plan stage runs: baseline verification only, with no
+    // implementation, review, review gate, or final routing evidence.
+    expect(verifyCalls).toHaveLength(1);
+    expect(fakeStore?.written.has("verification.json")).toBe(false);
+    expect(fakeStore?.written.has("review.json")).toBe(false);
+    expect(fakeStore?.written.has("review-gate.json")).toBe(false);
+    expect(fakeStore?.written.has("review-routing.json")).toBe(false);
+    expect(decisionsOf("worker-gate")).toHaveLength(0);
+    expect(decisionsOf("review-gate")).toHaveLength(0);
+    expect(decisionsOf("final-review-routing")).toHaveLength(0);
+    // The returned and persisted final status agree.
+    const persistedState = fakeStore?.written.get("state.json") as
+      | { finalStatus?: string; finalReason?: string }
+      | undefined;
+    expect(persistedState).toMatchObject({ finalStatus: "human", finalReason: "Jev selected proceed on an architecture with no implementation units." });
+  });
+
+  it("stops a zero-unit proceed below both thresholds with the zero-unit reason, ahead of the threshold checks", async () => {
+    architecture = { ...architecture, implementationUnits: [] };
+    const gate = planGate({ confidence: 0.36, planCompleteProbability: 0.31 });
+    vi.mocked(JevDecisionEngine.prototype.gatePlan).mockResolvedValue(gate);
+    const state = await run();
+    expect(state.finalStatus).toBe("human");
+    // The guard is threshold-independent: the zero-unit reason, not the
+    // confidence or completeness reason, ends the run.
+    expect(state.finalReason).toBe("Jev selected proceed on an architecture with no implementation units.");
+    expect(state.planGatePasses).toBe(1);
+    expect(state.replanPasses).toBe(0);
+    expect(state.rescoutPasses).toBe(0);
+    expect(workerAssignments()).toEqual([]);
+    expect(runnerCalls.filter((call) => call.fn === "runAgent").map((call) => call.role)).toEqual(["scout", "architect"]);
+    expect(fakeStore?.written.get("architecture.json")).toEqual(architecture);
+    expect(fakeStore?.written.get("plan-gate.json")).toEqual(gate);
+    expect(verifyCalls).toHaveLength(1);
+    expect(decisionsOf("final-review-routing")).toHaveLength(0);
+    const persistedState = fakeStore?.written.get("state.json") as
+      | { finalStatus?: string; finalReason?: string }
+      | undefined;
+    expect(persistedState).toMatchObject({ finalStatus: "human", finalReason: "Jev selected proceed on an architecture with no implementation units." });
+  });
+
+  it("recovers a zero-unit initial plan through one bounded replan and proceeds to acceptance", async () => {
+    const zeroUnit = { ...architecture, implementationUnits: [] };
+    const firstGate = planGate({ action: "replan", replanFocus: "scope" });
+    const secondGate = planGate(); // explicitly satisfactory proceed
+    vi.mocked(JevDecisionEngine.prototype.gatePlan)
+      .mockResolvedValueOnce(firstGate)
+      .mockResolvedValueOnce(secondGate);
+    // The initial architect pass yields the zero-unit architecture; the
+    // bounded replan pass restores the nonempty fixture architecture. The
+    // real options.validate wiring (validateArchitecture) still applies to
+    // every architect result.
+    const architectSequence = [zeroUnit, architecture];
+    let architectCalls = 0;
+    vi.mocked(agents.runAgent).mockImplementation(async (options) => {
+      runnerCalls.push({ fn: "runAgent", role: options.role, model: options.model });
+      const value =
+        options.role === "scout"
+          ? scoutFactory()
+          : options.role === "architect"
+            ? architectSequence[architectCalls++]
+            : reviewSequence[Math.min(reviewCalls++, reviewSequence.length - 1)];
+      return { result: options.validate(value), metrics: runnerMetrics(options.model) };
+    });
+    const state = await run();
+    expect(state.finalStatus).toBe("accepted");
+    // One bounded replan pass recovered the empty plan; the post-replan
+    // gate is evaluated normally and admits implementation.
+    expect(state.replanPasses).toBe(1);
+    expect(state.rescoutPasses).toBe(0);
+    expect(state.planGatePasses).toBe(2);
+    expect(workerAssignments()).toEqual([
+      { role: "implementer", unitId: "a" },
+      { role: "implementer", unitId: "b" },
+    ]);
+    expect(state.workers?.map((report) => report.unitId)).toEqual(["a", "b"]);
+    // The initial zero-unit architecture and gate, the recovered
+    // architecture and post-replan gate, and the final planning artifacts
+    // are all persisted.
+    expect(fakeStore?.written.get("architecture.json")).toEqual(zeroUnit);
+    expect(fakeStore?.written.get("plan-gate.json")).toEqual(firstGate);
+    expect(fakeStore?.written.get("architecture-replan-1.json")).toEqual(architecture);
+    expect(fakeStore?.written.get("plan-gate-after-replan-1.json")).toEqual(secondGate);
+    expect(fakeStore?.written.get("plan-gate-final.json")).toEqual(secondGate);
+    expect(fakeStore?.written.get("architecture-final.json")).toEqual(architecture);
+    // The plan-gate decision history records both ordered gates.
+    expect(decisionsOf("plan-gate").map((decision) => [decision.pass, (decision.decision as { action?: string }).action])).toEqual([
+      [1, "replan"], [2, "proceed"],
+    ]);
+  });
+
+  it("recovers a zero-unit initial plan through one bounded rescout and proceeds to acceptance", async () => {
+    const zeroUnit = { ...architecture, implementationUnits: [] };
+    const firstGate = planGate({ action: "rescout", rescoutFocus: "dependencies" });
+    const secondGate = planGate(); // explicitly satisfactory proceed
+    vi.mocked(JevDecisionEngine.prototype.gatePlan)
+      .mockResolvedValueOnce(firstGate)
+      .mockResolvedValueOnce(secondGate);
+    // The initial architect pass yields the zero-unit architecture; the
+    // bounded rescout/replan recovery restores the nonempty fixture
+    // architecture. The real options.validate wiring still applies to
+    // every architect result.
+    const architectSequence = [zeroUnit, architecture];
+    let architectCalls = 0;
+    vi.mocked(agents.runAgent).mockImplementation(async (options) => {
+      runnerCalls.push({ fn: "runAgent", role: options.role, model: options.model });
+      const value =
+        options.role === "scout"
+          ? scoutFactory()
+          : options.role === "architect"
+            ? architectSequence[architectCalls++]
+            : reviewSequence[Math.min(reviewCalls++, reviewSequence.length - 1)];
+      return { result: options.validate(value), metrics: runnerMetrics(options.model) };
+    });
+    const state = await run();
+    expect(state.finalStatus).toBe("accepted");
+    expect(state.rescoutPasses).toBe(1);
+    expect(state.replanPasses).toBe(0);
+    expect(state.planGatePasses).toBe(2);
+    expect(workerAssignments()).toEqual([
+      { role: "implementer", unitId: "a" },
+      { role: "implementer", unitId: "b" },
+    ]);
+    expect(state.workers?.map((report) => report.unitId)).toEqual(["a", "b"]);
+    // The initial zero-unit architecture and gate, the supplemental and
+    // merged scout evidence, the recovered architecture, and the
+    // post-rescout gate are all persisted.
+    expect(fakeStore?.written.get("architecture.json")).toEqual(zeroUnit);
+    expect(fakeStore?.written.get("plan-gate.json")).toEqual(firstGate);
+    expect(fakeStore?.written.get("evidence-rescout-1.json")).toEqual(scoutFactory());
+    expect(fakeStore?.written.has("evidence-merged-1.json")).toBe(true);
+    expect(fakeStore?.written.get("architecture-after-rescout-1.json")).toEqual(architecture);
+    expect(fakeStore?.written.get("plan-gate-after-rescout-1.json")).toEqual(secondGate);
+    expect(fakeStore?.written.get("plan-gate-final.json")).toEqual(secondGate);
+    expect(fakeStore?.written.get("architecture-final.json")).toEqual(architecture);
+    // The plan-gate decision history records both ordered gates.
+    expect(decisionsOf("plan-gate").map((decision) => [decision.pass, (decision.decision as { action?: string }).action])).toEqual([
+      [1, "rescout"], [2, "proceed"],
+    ]);
+  });
+
+  it("stops at human with zero workers when a recovery pass leaves the architecture zero-unit and Jev selects proceed", async () => {
+    const zeroUnit = { ...architecture, implementationUnits: [] };
+    const firstGate = planGate({ action: "replan", replanFocus: "scope" });
+    const secondGate = planGate(); // satisfactory proceed on the recovered plan
+    vi.mocked(JevDecisionEngine.prototype.gatePlan)
+      .mockResolvedValueOnce(firstGate)
+      .mockResolvedValueOnce(secondGate);
+    // Both architect passes yield the zero-unit architecture, so the
+    // recovery does not restore any implementation units.
+    const architectSequence = [zeroUnit, zeroUnit];
+    let architectCalls = 0;
+    vi.mocked(agents.runAgent).mockImplementation(async (options) => {
+      runnerCalls.push({ fn: "runAgent", role: options.role, model: options.model });
+      const value =
+        options.role === "scout"
+          ? scoutFactory()
+          : options.role === "architect"
+            ? architectSequence[architectCalls++]
+            : reviewSequence[Math.min(reviewCalls++, reviewSequence.length - 1)];
+      return { result: options.validate(value), metrics: runnerMetrics(options.model) };
+    });
+    const state = await run();
+    expect(state.finalStatus).toBe("human");
+    // The guard applies to the current architecture after recovery: the
+    // satisfactory proceed on the still-empty plan stops at human.
+    expect(state.finalReason).toBe("Jev selected proceed on an architecture with no implementation units.");
+    expect(state.replanPasses).toBe(1);
+    expect(state.rescoutPasses).toBe(0);
+    expect(state.planGatePasses).toBe(2);
+    expect(workerAssignments()).toEqual([]);
+    expect(runnerCalls.filter((call) => call.fn === "runAgent").map((call) => call.role)).toEqual([
+      "scout", "architect", "architect",
+    ]);
+    expect(runnerCalls.filter((call) => call.fn === "runCheckpointableAgent")).toEqual([]);
+    // Both zero-unit architectures and both gates are persisted...
+    expect(fakeStore?.written.get("architecture.json")).toEqual(zeroUnit);
+    expect(fakeStore?.written.get("plan-gate.json")).toEqual(firstGate);
+    expect(fakeStore?.written.get("architecture-replan-1.json")).toEqual(zeroUnit);
+    expect(fakeStore?.written.get("plan-gate-after-replan-1.json")).toEqual(secondGate);
+    // ...and no post-plan stage runs: baseline verification only, with no
+    // implementation, review, review gate, or final routing evidence.
+    expect(verifyCalls).toHaveLength(1);
+    expect(fakeStore?.written.has("verification.json")).toBe(false);
+    expect(fakeStore?.written.has("review.json")).toBe(false);
+    expect(fakeStore?.written.has("review-gate.json")).toBe(false);
+    expect(fakeStore?.written.has("review-routing.json")).toBe(false);
+    expect(decisionsOf("final-review-routing")).toHaveLength(0);
+    // The returned and persisted final status agree.
+    const persistedState = fakeStore?.written.get("state.json") as
+      | { finalStatus?: string; finalReason?: string }
+      | undefined;
+    expect(persistedState).toMatchObject({ finalStatus: "human", finalReason: "Jev selected proceed on an architecture with no implementation units." });
+  });
+});
+
+describe("zero-unit architecture validation (fast, real validateArchitecture)", () => {
+  /** The structurally valid top-level fields shared by every fixture. */
+  const topLevel = {
+    summary: "fixture",
+    approach: "bounded",
+    architecturalDecisions: [],
+    risks: [],
+    verificationStrategy: [],
+    assumptions: [],
+  };
+
+  it("accepts a structurally valid empty implementationUnits array and keeps it empty", () => {
+    const result = validateArchitecture({ ...topLevel, implementationUnits: [] });
+    expect(result.implementationUnits).toEqual([]);
+    expect(result).toEqual({ ...topLevel, implementationUnits: [] });
+  });
+
+  it("still rejects a missing or non-array implementationUnits field", () => {
+    expect(() => validateArchitecture({ ...topLevel })).toThrow("implementationUnits must be an array");
+    expect(() => validateArchitecture({ ...topLevel, implementationUnits: "a" })).toThrow("implementationUnits must be an array");
+  });
+
+  it("still rejects malformed top-level fields with an empty unit list", () => {
+    expect(() => validateArchitecture({ ...topLevel, summary: 42, implementationUnits: [] })).toThrow("summary must be a string");
+    expect(() => validateArchitecture({ ...topLevel, approach: [], implementationUnits: [] })).toThrow("approach must be a string");
+    expect(() => validateArchitecture({ ...topLevel, risks: "none", implementationUnits: [] })).toThrow("risks must be an array");
+    expect(() => validateArchitecture({ ...topLevel, verificationStrategy: 1, implementationUnits: [] })).toThrow("verificationStrategy must be an array");
+    // A missing top-level field still fails even with an empty unit list.
+    expect(() => validateArchitecture({ summary: "fixture", implementationUnits: [] })).toThrow("approach must be a string");
+  });
+
+  it("still rejects malformed supplied units under the existing per-unit rules", () => {
+    expect(() => validateArchitecture({ ...topLevel, implementationUnits: [42] })).toThrow("implementationUnits[0] must be an object");
+    expect(() => validateArchitecture({ ...topLevel, implementationUnits: [{ id: 7, objective: "x", acceptance: [], constraints: [] }] })).toThrow("id must be a string");
+    expect(() => validateArchitecture({ ...topLevel, implementationUnits: [{ id: "a", acceptance: [], constraints: [] }] })).toThrow("objective must be a string");
+    expect(() => validateArchitecture({ ...topLevel, implementationUnits: [{ id: "a", objective: "x", acceptance: "not-an-array", constraints: [] }] })).toThrow("acceptance must be an array");
   });
 });

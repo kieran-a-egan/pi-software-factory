@@ -15,7 +15,7 @@ export function evaluateFinalReview(input: {
   const normal = acceptanceEligible && gate.reviewSufficientProbability >= minNoulProbability;
   const bounded = acceptanceEligible &&
     gate.reviewSufficientProbability < minNoulProbability &&
-    gate.residualRisk === "low" && review.verdict === "clean" &&
+    (gate.residualRisk === "low" || gate.residualRisk === "medium") && review.verdict === "clean" &&
     !hasMajorOrCriticalFindings;
 
   return {

@@ -68,9 +68,9 @@ For release history, see [CHANGELOG.md](CHANGELOG.md).
 - A clean working tree is required by default.
 - Before any model call or Jev intake, the configured deterministic checks run against the untouched repository as an authoritative baseline verification. It uses the same commands as later verification but establishes that the repository itself is healthy. A failing baseline check stops the run as blocked before any models run and before repair is ever attempted, and it does not require a `TYPESAFE_API_KEY` or any model to be available.
 - Post-implementation verification and repair are unchanged: they run after implementation and remain the gate for the delivered change, while the baseline gate only vets the starting repository.
-- Low-confidence Jev decisions stop for human review.
+- Low-confidence planning rescout/replan proceeds only within the configured bounded loops; low-confidence proceed remains confidence-gated, and other unsafe/unsupported low-confidence routing stops for human review.
 - Planning recovery, worker continuation, repair, and context recovery are bounded by configuration.
-- Final acceptance requires deterministic verification, an independent reviewer review, and Jev acceptance. Normally both configured Jev thresholds must pass. Below-threshold review sufficiency is accepted only when action confidence still passes, residual risk is `low`, the reviewer's verdict is `clean`, and there are no major/critical findings. Original Jev scores and the selected routing policy are persisted; thresholds and prompts are unchanged.
+- Final acceptance requires deterministic verification, an independent reviewer review, and Jev acceptance. Normally both configured Jev thresholds must pass. Below-threshold review sufficiency is accepted only when action confidence still passes, residual risk is `low` or `medium`, the reviewer's verdict is `clean`, and there are no major/critical findings. Original Jev scores and the selected routing policy are persisted; thresholds and prompts are unchanged.
 
 ## Requirements
 
@@ -95,7 +95,7 @@ These are built-in assignments, not required architecture: any models available 
 ### Install a tagged release
 
 ```text
-pi install git:github.com/kieran-a-egan/pi-software-factory@v0.10.0
+pi install git:github.com/kieran-a-egan/pi-software-factory@v1.0.0
 ```
 
 Pinned Git refs stay fixed until you explicitly update them.
@@ -287,7 +287,7 @@ The factory uses bounded recovery rather than open-ended autonomous loops.
 - **Context checkpoints:** long-running implementer and repairer sessions can persist compact continuation state and resume in a fresh session.
 - **Worker watchdog:** implementation and repair sessions are aborted if they exceed the configured runtime limit.
 
-Exhausted limits or low-confidence routing stop at `HUMAN`.
+Exhausted limits, low-confidence proceed, and other unsafe/unsupported low-confidence routing stop at `HUMAN`; the only exception is low-confidence planning rescout/replan, which runs within the configured bounded loops.
 
 ### Repair budgets
 
