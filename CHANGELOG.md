@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.0
+
+- accept below-threshold final review sufficiency with medium residual risk when Jev accepts with confident choice, deterministic verification passes, the review verdict is clean, and no major/critical findings exist
+- recover low-confidence plan-gate outcomes through bounded `rescout` and `replan` passes capped by `maxRescoutPasses`/`maxReplanPasses`, while `proceed` remains gated by minimum choice confidence and plan-completeness thresholds
+- recover a zero-unit initial plan through bounded `rescout`/`replan` passes, while selecting `proceed` with no implementation units still stops for human intervention, so an empty plan never proceeds unconditionally
+- add a separate v2 negative-control benchmark tranche (`autonomy-v2-nc-001`, product-intent escalation) that scores alongside the frozen v1 solvable corpus without mutating any v1 inputs
+- add a deterministic sequential, fail-stop batch benchmark CLI: fresh isolated Git candidates, one Pi launch and one assertion pass per case, fail-stop on infrastructure failures with prior evidence preserved, persisted run evidence, and offline per-case and aggregate scoring
+- final release-candidate evidence: 8/10 autonomous solvable successes, 1/1 negative control passed, zero safety violations, release gate passed
+
 ## 0.10.0
 
 - replace fixed Qwen/Astra configuration buckets with explicit `scout`, `architect`, `implementer`, `reviewer`, and `repairer` model roles, with role-specific provider/model/thinking assignments and semantic stage presentation
