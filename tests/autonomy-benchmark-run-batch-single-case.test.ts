@@ -25,7 +25,15 @@
  *   `authoritativeVerificationPassed`, `unchanged` disposition),
  *   `case-score.json` passes, `batch-state.json` reports `completed` with no
  *   infrastructure failure, and the candidate fixture source remains
- *   unchanged.
+ *   unchanged;
+ * - a single solvable case in which a test-local runner wrapper, on the
+ *   final candidate-preparation Git answer (`rev-parse HEAD` — right after
+ *   the initial state and `preparing-candidate` persistence have
+ *   succeeded), replaces `batch-state.json` with a directory at the exact
+ *   same path: the next phase transition (`running-pi`) makes `runBatch`
+ *   reject with the propagated `cannot persist` diagnostic, and the
+ *   recorded requests are exactly the five candidate-preparation Git calls
+ *   — no Pi or assertion launch.
  *
  * Every subprocess request (Git, Pi, assertion) is answered by the scripted
  * runner, which records each request independently and rejects any request
@@ -229,6 +237,11 @@ function requestKind(request: ProcessRequest): string {
   if (request.args[0] === "--import") return "assertion";
   if (request.args[1] === "--approve") return "pi";
   return `unknown:${request.executable}`;
+}
+
+/** Escape literal text for safe embedding in a RegExp pattern. */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**
@@ -438,4 +451,68 @@ it("runBatch preserves one negative-control HUMAN case with unchanged source and
 
   // The candidate fixture source remains unchanged after the run.
   expect(await readFile(join(caseDirectory, "candidate", "notes.txt"), "utf8")).toBe("control fixture source\n");
+});
+
+it("runBatch fails stop when the live batch-state write fails before Pi launches", async () => {
+  const root = await tempRoot();
+  const definition = {
+    id: "single-case-persist-fail-001",
+    schemaVersion: "v1",
+    kind: "solvable",
+    category: "refactor",
+    objective: "Refactor the fixture module without changing its behavior",
+    expectedTerminalOutcome: "ACCEPTED",
+    humanImplementationInterventionAllowed: false,
+    assertionIdentifiers: ["assert-terminal-status"],
+  };
+  const factoryVersionRef = "pi-software-factory@single-case-persist-fail";
+  const { manifestPath, factoryConfigPath, outputPath } = await createBatchFixture(root, {
+    caseId: definition.id,
+    factoryVersionRef,
+    definition,
+    fixtureContent: "persist-failure fixture source\n",
+  });
+  const scripted = createScriptedRunner({
+    runId: "run-single-case-persist-fail",
+    finalStatus: "accepted",
+    finalReason: "all verification commands passed",
+    disposition: "accepted-in-place",
+    verificationPassed: true,
+    assertionResults: [["assert-terminal-status", true]],
+  });
+  const statePath = join(outputPath, "batch-state.json");
+
+  // Test-local, awaited fault injection: after the scripted `rev-parse
+  // HEAD` answer — the last candidate-preparation Git call, immediately
+  // after the initial state and `preparing-candidate` persistence have
+  // succeeded — replace `batch-state.json` with a directory at the exact
+  // same path. The replacement is cross-platform (no permission bits, no
+  // filesystem mocks), so the next phase transition (`running-pi`) must
+  // fail stop before any Pi or assertion launch.
+  const injectingRunner: ProcessRunner = async (request) => {
+    const result = await scripted.runner(request);
+    if (request.executable === "git" && request.args.includes("rev-parse")) {
+      const persisted = JSON.parse(await readFile(statePath, "utf8")) as Record<string, unknown>;
+      expect(persisted.status).toBe("in-progress");
+      expect((persisted.cases as Array<Record<string, unknown>>)[0]?.["phase"]).toBe("preparing-candidate");
+      await rm(statePath, { force: true });
+      await mkdir(statePath, { recursive: true });
+    }
+    return result;
+  };
+
+  // The propagated diagnostic identifies `batch-state.json` by its full
+  // path; the errno detail is platform-dependent and deliberately not
+  // asserted.
+  await expect(
+    runBatch(
+      { input: manifestPath, output: outputPath, factoryConfig: factoryConfigPath },
+      { runner: injectingRunner },
+    ),
+  ).rejects.toThrow(new RegExp(`^cannot persist ${escapeRegExp(statePath)} \\(`));
+
+  // Exactly the five candidate-preparation Git requests: no Pi launch and
+  // no assertion launch occurred after the failed `running-pi`
+  // persistence.
+  expect(scripted.requests.map(requestKind)).toEqual(["git", "git", "git", "git", "git"]);
 });

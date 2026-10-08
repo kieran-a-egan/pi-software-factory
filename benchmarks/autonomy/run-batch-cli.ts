@@ -1168,15 +1168,13 @@ async function executeCase(params: {
 
 /**
  * Persist the live `batch-state.json` summary. This is the only artifact the
- * invocation rewrites. Write failures are swallowed so a state-persistence
- * problem never masks the primary batch error.
+ * invocation rewrites. Write failures propagate to the caller so normal
+ * execution fails stop when the live audit record can no longer be written.
+ * The two call sites that already hold a primary failure wrap this call in a
+ * local guard so their failed-state reporting stays best-effort.
  */
 async function persistBatchState(state: BatchState): Promise<void> {
-  try {
-    await writeJsonFile(join(state.outputRoot, "batch-state.json"), state);
-  } catch {
-    // Best-effort live summary; the primary error is authoritative.
-  }
+  await writeJsonFile(join(state.outputRoot, "batch-state.json"), state);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1271,7 +1269,13 @@ export async function runBatch(
       entry.error = oneLine(describeError(error));
       state.status = "failed";
       state.failure = { caseId: validatedCase.caseId, phase: failedPhase, error: entry.error };
-      await persistBatchState(state);
+      try {
+        // Best-effort failed-state report: a second write failure must not
+        // mask the primary error rethrown below.
+        await persistBatchState(state);
+      } catch {
+        // The reporting write failed; the primary error is authoritative.
+      }
       throw error;
     }
   }
@@ -1290,7 +1294,13 @@ export async function runBatch(
   } catch (error) {
     state.status = "failed";
     state.failure = { phase: "aggregating", error: oneLine(describeError(error)) };
-    await persistBatchState(state);
+    try {
+      // Best-effort failed-state report: a second write failure must not
+      // mask the primary error rethrown below.
+      await persistBatchState(state);
+    } catch {
+      // The reporting write failed; the primary error is authoritative.
+    }
     throw error;
   }
 }
